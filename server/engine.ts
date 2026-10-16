@@ -11,9 +11,12 @@ import {
   type Envelope,
   type SendResult,
 } from './adapters.js';
+import { fetchRss } from './rss.js';
+import { freezeDigest } from './digest.js';
 
 export interface Adapters {
   feed: typeof fetchFeed;
+  rss: typeof fetchRss;
   mailbox: () => Promise<MailSession>;
   send: (text: string, uuid: string) => Promise<SendResult>;
 }
@@ -42,6 +45,7 @@ export class Engine {
     this.destination = destinationRef(config);
     this.adapters = {
       feed: fetchFeed,
+      rss: fetchRss,
       mailbox: () => connectMailbox(config),
       send: feishuSender(config),
       ...overrides,
@@ -74,6 +78,7 @@ export class Engine {
         const job = this.store.claimJob();
         if (job) await this.execute(job);
       }
+      if (!this.stopped) freezeDigest(this.store, this.destination);
       if ((this.config.demo || this.config.feishu.enabled) && !this.stopped)
         for (let n = 0; n < 5 && !this.stopped; n++) {
           const d = this.store.claimDelivery(this.destination);
@@ -140,7 +145,10 @@ export class Engine {
       this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', cacheKey)?.value ||
         '{}',
     );
-    const result = await this.adapters.feed(s.channel, s.initialized ? cache : {});
+    const result =
+      s.type === 'rss'
+        ? await this.adapters.rss(s.feed_url, s.initialized ? cache : {})
+        : await this.adapters.feed(s.channel, s.initialized ? cache : {});
     if (job.kind === 'probe') {
       this.store.finishJob(job, undefined, {
         connected: true,
@@ -165,6 +173,7 @@ export class Engine {
       for (const item of result.items) {
         const known = this.store.get('SELECT 1 FROM items WHERE key=?', item.key);
         const oldUnseen =
+          s.type === 'youtube' &&
           !known &&
           item.published !== null &&
           item.published !== undefined &&

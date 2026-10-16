@@ -3,10 +3,13 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppError, defaults, dayKey, preview, type Settings } from './config.js';
+import { migrateV2 } from './migrations.js';
 
 export interface Source {
   id: string;
-  type: 'youtube' | 'email';
+  type: 'youtube' | 'email' | 'rss';
+  feed_url: string;
+  delivery_mode: 'immediate' | 'digest';
   name: string;
   channel: string;
   sender: string;
@@ -28,7 +31,7 @@ export interface Source {
 export interface Item {
   id: string;
   key: string;
-  kind: 'youtube' | 'email';
+  kind: 'youtube' | 'email' | 'rss' | 'digest';
   title: string;
   author: string;
   url: string;
@@ -54,6 +57,9 @@ export interface Job {
   created: number;
 }
 export interface Delivery {
+  mode: 'immediate' | 'digest' | 'digest_part';
+  batch_id: string;
+  part_id: string;
   id: string;
   item_id: string;
   destination: string;
@@ -99,7 +105,10 @@ export class Store {
     this.db = new DatabaseSync(join(dir, 'feedrelay.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = this.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
-    if (version > 1) throw new AppError('DATABASE_NEWER_THAN_APP');
+    if (version > 2) {
+      this.db.close();
+      throw new AppError('DATABASE_NEWER_THAN_APP');
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sources (
@@ -125,12 +134,17 @@ export class Store {
       CREATE INDEX IF NOT EXISTS attempts_day ON attempts(day);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL, resource TEXT NOT NULL, code TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, until INTEGER NOT NULL);
-      PRAGMA user_version=1;
     `);
     const existingMode = this.get<Row>('SELECT value FROM meta WHERE key=?', 'mode')?.value;
     if (existingMode && existingMode !== mode) {
       this.db.close();
       throw new AppError('DEMO_LIVE_DATABASE_MISMATCH');
+    }
+    try {
+      migrateV2(this.db);
+    } catch (error) {
+      this.db.close();
+      throw error;
     }
     this.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'mode', mode);
     this.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'settings', JSON.stringify(defaults));
@@ -156,9 +170,12 @@ export class Store {
     }
   }
   settings(): Settings {
-    return JSON.parse(
-      this.get<Row>('SELECT value FROM meta WHERE key=?', 'settings')!.value as string,
-    );
+    return {
+      ...defaults,
+      ...JSON.parse(
+        this.get<Row>('SELECT value FROM meta WHERE key=?', 'settings')!.value as string,
+      ),
+    };
   }
   setSettings(settings: Settings) {
     this.run('UPDATE meta SET value=? WHERE key=?', JSON.stringify(settings), 'settings');
@@ -180,7 +197,7 @@ export class Store {
   }
   sources() {
     return this.all<Source>(
-      `SELECT s.*, (SELECT count(*) FROM source_items si JOIN deliveries d ON d.item_id=si.item_id WHERE si.source_id=s.id AND d.status IN ('pending','retry_wait','unknown')) AS backlog FROM sources s WHERE deleted=0 ORDER BY created DESC`,
+      `SELECT s.*, (SELECT count(*) FROM source_items si JOIN deliveries d ON d.item_id=si.item_id WHERE si.source_id=s.id AND d.status IN ('pending','retry_wait','unknown','digest_wait')) AS backlog FROM sources s WHERE deleted=0 ORDER BY created DESC`,
     );
   }
   createSource(input: {
@@ -189,11 +206,13 @@ export class Store {
     channel?: string;
     sender?: string;
     subject?: string;
+    feed_url?: string;
+    delivery_mode?: Source['delivery_mode'];
   }) {
     const id = randomUUID();
     try {
       this.run(
-        'INSERT INTO sources(id,type,name,channel,sender,subject,created) VALUES (?,?,?,?,?,?,?)',
+        'INSERT INTO sources(id,type,name,channel,sender,subject,created,feed_url,delivery_mode) VALUES (?,?,?,?,?,?,?,?,?)',
         id,
         input.type,
         input.name,
@@ -201,6 +220,8 @@ export class Store {
         input.sender || '',
         input.subject || '',
         this.now(),
+        input.feed_url || '',
+        input.delivery_mode || 'immediate',
       );
     } catch (e) {
       if (String(e).includes('UNIQUE')) throw new AppError('SOURCE_ALREADY_EXISTS', 409);
@@ -258,6 +279,12 @@ export class Store {
     }
     return this.source(id);
   }
+  changeDeliveryMode(id: string, mode: Source['delivery_mode']) {
+    this.source(id);
+    this.run('UPDATE sources SET delivery_mode=? WHERE id=?', mode, id);
+    this.event('delivery_mode_changed', id, mode);
+    return this.source(id);
+  }
   private cancelSourceJobs(s: Source) {
     this.run(
       `UPDATE jobs SET status='cancelled',token='',lease=0 WHERE (resource=? OR (?='email' AND kind='mailbox')) AND status IN ('pending','running','retry_wait')`,
@@ -275,7 +302,10 @@ export class Store {
       this.cancelSourceJobs(s);
       this.cancelOrphans();
       if (erase) {
-        this.run("UPDATE sources SET name='',channel='',sender='',subject='' WHERE id=?", id);
+        this.run(
+          "UPDATE sources SET name='',channel='',sender='',subject='',feed_url='' WHERE id=?",
+          id,
+        );
         this.run("UPDATE jobs SET payload='{}',result='' WHERE resource=?", id);
         for (const job of this.all<Job>("SELECT * FROM jobs WHERE kind='body'")) {
           const payload = JSON.parse(job.payload);
@@ -309,7 +339,13 @@ export class Store {
   }
   private cancelOrphans() {
     this.run(
-      `UPDATE deliveries SET status='cancelled',snapshot='',error='SOURCE_DISABLED' WHERE status IN ('pending','retry_wait') AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id=deliveries.item_id AND i.key LIKE 'test:%') AND NOT EXISTS (SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=deliveries.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0)`,
+      `UPDATE deliveries SET status='cancelled',snapshot='',error='SOURCE_DISABLED' WHERE mode<>'digest_part' AND status IN ('pending','retry_wait','digest_wait') AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id=deliveries.item_id AND i.key LIKE 'test:%') AND NOT EXISTS (SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=deliveries.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0)`,
+    );
+    this.run(
+      `UPDATE deliveries SET status='cancelled',snapshot='',error='DIGEST_MEMBER_DISABLED' WHERE mode='digest_part' AND status IN ('pending','retry_wait') AND EXISTS(SELECT 1 FROM deliveries member WHERE member.part_id=deliveries.id AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=member.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0))`,
+    );
+    this.run(
+      `UPDATE items SET text='' WHERE kind='digest' AND id IN (SELECT item_id FROM deliveries WHERE mode='digest_part' AND status='cancelled')`,
     );
   }
   enqueue(kind: Job['kind'], resource: string, generation = 0, payload: object = {}) {
@@ -433,11 +469,12 @@ export class Store {
       item = this.get<Item>('SELECT * FROM items WHERE id=?', id)!;
     } else if (!item.expired)
       this.run(
-        'UPDATE items SET title=?,author=?,text=?,published=? WHERE id=?',
+        'UPDATE items SET title=?,author=?,text=?,published=?,url=? WHERE id=?',
         preview(incoming.title, 300),
         preview(incoming.author, 200),
         incoming.text,
         incoming.published ?? null,
+        incoming.url,
         item.id,
       );
     for (const s of sources)
@@ -448,15 +485,28 @@ export class Store {
         s.generation,
       );
     if (notify && !item.expired) {
-      const text = `${incoming.title}\n${incoming.author}\n${incoming.received ? '收件' : '发布'}：${new Date(incoming.received || incoming.published || this.now()).toISOString()}\n\n${preview(incoming.text)}\n\n${incoming.url || '请在邮箱查看原文'}`;
+      const text = `${preview(incoming.title, 300)}\n${preview(incoming.author, 200)}\n${incoming.received ? '收件' : '发布'}：${new Date(incoming.received || incoming.published || this.now()).toISOString()}\n\n${preview(incoming.text)}\n\n${incoming.url || (incoming.kind === 'email' ? '请在邮箱查看原文' : '来源未提供原文链接')}`;
+      const eligible = sources.flatMap((s) => {
+        const live = this.get<Source>(
+          'SELECT * FROM sources WHERE id=? AND enabled=1 AND notify=1 AND deleted=0',
+          s.id,
+        );
+        return live ? [live] : [];
+      });
+      const mode =
+        eligible.length && eligible.every((s) => s.delivery_mode === 'digest')
+          ? 'digest'
+          : 'immediate';
       this.run(
-        'INSERT OR IGNORE INTO deliveries(id,item_id,destination,snapshot,available,created) VALUES (?,?,?,?,?,?)',
+        'INSERT OR IGNORE INTO deliveries(id,item_id,destination,snapshot,available,created,mode,status) VALUES (?,?,?,?,?,?,?,?)',
         randomUUID(),
         item.id,
         destination,
         text,
         this.now(),
         this.now(),
+        mode,
+        mode === 'digest' ? 'digest_wait' : 'pending',
       );
     }
     return item;
@@ -471,7 +521,7 @@ export class Store {
         `UPDATE attempts SET status='unknown',code='SEND_INTERRUPTED' WHERE status='sending' AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.id=attempts.delivery_id AND d.status='sending')`,
       );
       this.run(
-        `UPDATE deliveries SET status='failed',error='DESTINATION_CHANGED' WHERE destination<>? AND status IN ('pending','retry_wait')`,
+        `UPDATE deliveries SET status='failed',error='DESTINATION_CHANGED' WHERE destination<>? AND status IN ('pending','retry_wait','digest_wait')`,
         destination,
       );
       this.cancelOrphans();
@@ -549,6 +599,7 @@ export class Store {
       if (!d || !['failed', 'unknown'].includes(d.status))
         throw new AppError('DELIVERY_NOT_RESOLVABLE', 409);
       if (action === 'retry') {
+        if (d.part_id) throw new AppError('RESOLVE_DIGEST_PART', 409);
         if (!d.snapshot || this.get<Item>('SELECT * FROM items WHERE id=?', d.item_id)?.expired)
           throw new AppError('CONTENT_EXPIRED', 409);
         if (
@@ -559,8 +610,17 @@ export class Store {
           !this.get("SELECT 1 FROM items WHERE id=? AND key LIKE 'test:%'", d.item_id)
         )
           throw new AppError('SOURCE_DISABLED', 409);
+        if (
+          d.mode === 'digest_part' &&
+          this.get(
+            `SELECT 1 FROM deliveries m WHERE m.part_id=? AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=m.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0)`,
+            id,
+          )
+        )
+          throw new AppError('SOURCE_DISABLED', 409);
         this.run(
-          `UPDATE deliveries SET status='pending',destination=?,attempt=0,available=?,error='',resolution='manual_retry' WHERE id=?`,
+          `UPDATE deliveries SET status=?,destination=?,attempt=0,available=?,error='',resolution='manual_retry' WHERE id=?`,
+          d.mode === 'digest' ? 'digest_wait' : 'pending',
           destination,
           this.now(),
           id,
@@ -593,6 +653,11 @@ export class Store {
     this.run(`DELETE FROM locks WHERE name='worker' AND token=?`, token);
   }
   private expireItem(id: string, eraseMetadata = false) {
+    const parent = this.get<{ item_id: string }>(
+      'SELECT p.item_id FROM deliveries d JOIN deliveries p ON p.id=d.part_id WHERE d.item_id=?',
+      id,
+    );
+    if (parent && parent.item_id !== id) this.expireItem(parent.item_id, eraseMetadata);
     this.run(
       `UPDATE items SET text='',expired=1,title=CASE WHEN ? THEN '' ELSE title END,author=CASE WHEN ? THEN '' ELSE author END,url=CASE WHEN ? THEN '' ELSE url END WHERE id=?`,
       +eraseMetadata,
@@ -601,7 +666,7 @@ export class Store {
       id,
     );
     this.run(
-      `UPDATE deliveries SET snapshot='',status=CASE WHEN status IN ('pending','retry_wait') THEN 'failed' ELSE status END,error=CASE WHEN status IN ('pending','retry_wait') THEN 'CONTENT_EXPIRED' ELSE error END WHERE item_id=?`,
+      `UPDATE deliveries SET snapshot='',status=CASE WHEN status IN ('pending','retry_wait','digest_wait') THEN 'failed' ELSE status END,error=CASE WHEN status IN ('pending','retry_wait','digest_wait') THEN 'CONTENT_EXPIRED' ELSE error END WHERE item_id=?`,
       id,
     );
   }
@@ -633,11 +698,15 @@ export class Store {
         this.now() - 30 * DAY,
       );
       this.run(
-        `DELETE FROM source_items WHERE item_id IN (SELECT id FROM items WHERE discovered<? AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.item_id=items.id AND d.status IN ('pending','sending','retry_wait','failed','unknown')))`,
+        `DELETE FROM deliveries WHERE created<? AND mode='digest' AND (status IN ('sent','cancelled') OR (status='batched' AND EXISTS(SELECT 1 FROM deliveries p WHERE p.id=deliveries.part_id AND p.status IN ('sent','cancelled'))))`,
         this.now() - 90 * DAY,
       );
       this.run(
-        `DELETE FROM deliveries WHERE created<? AND status IN ('sent','cancelled')`,
+        `DELETE FROM source_items WHERE item_id IN (SELECT id FROM items WHERE discovered<? AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE d.item_id=items.id AND d.status NOT IN ('sent','cancelled')))`,
+        this.now() - 90 * DAY,
+      );
+      this.run(
+        `DELETE FROM deliveries WHERE created<? AND status IN ('sent','cancelled') AND NOT EXISTS(SELECT 1 FROM deliveries m WHERE m.part_id=deliveries.id)`,
         this.now() - 90 * DAY,
       );
       this.run(
@@ -645,15 +714,19 @@ export class Store {
         this.now() - 90 * DAY,
       );
       this.run('DELETE FROM attempts WHERE at<?', this.now() - 90 * DAY);
+      this.run(
+        `DELETE FROM digest_batches WHERE created<? AND NOT EXISTS(SELECT 1 FROM deliveries WHERE batch_id=digest_batches.id)`,
+        this.now() - 90 * DAY,
+      );
     });
   }
   stats() {
     const day = dayKey(this.now(), this.settings().timezone);
     return {
       sources: this.get<Row>('SELECT count(*) n FROM sources WHERE deleted=0')!.n,
-      items: this.get<Row>('SELECT count(*) n FROM items WHERE expired=0')!.n,
+      items: this.get<Row>("SELECT count(*) n FROM items WHERE expired=0 AND kind<>'digest'")!.n,
       pending: this.get<Row>(
-        `SELECT count(*) n FROM deliveries WHERE status IN ('pending','retry_wait')`,
+        `SELECT count(*) n FROM deliveries WHERE status IN ('pending','retry_wait','digest_wait')`,
       )!.n,
       unknown: this.get<Row>(`SELECT count(*) n FROM deliveries WHERE status='unknown'`)!.n,
       sent: this.get<Row>(`SELECT count(*) n FROM deliveries WHERE status='sent'`)!.n,

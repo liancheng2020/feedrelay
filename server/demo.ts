@@ -2,6 +2,7 @@ import type { Config } from './config.js';
 import { Store, type Incoming } from './store.js';
 import { channelId, type Envelope } from './adapters.js';
 import type { Adapters } from './engine.js';
+import { freezeDigest } from './digest.js';
 
 const channels = ['UC' + 'a'.repeat(22), 'UC' + 'b'.repeat(22)];
 export function seedDemo(store: Store) {
@@ -65,6 +66,38 @@ export function seedDemo(store: Store) {
     );
   });
   store.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'demo-sequence', '0');
+  const rss = store.toggle(
+    store.createSource({
+      type: 'rss',
+      name: '公开订阅 · 日报样例',
+      feed_url: 'https://feeds.example.com/demo.xml',
+      delivery_mode: 'digest',
+    }).id,
+    true,
+    true,
+  );
+  store.run(
+    'UPDATE sources SET initialized=1,baseline=?,last_success=?,next_check=? WHERE id=?',
+    store.now() - 86400000,
+    store.now(),
+    store.now() + 900000,
+    rss.id,
+  );
+  const sample = store.put(
+    {
+      key: 'demo:digest:seed',
+      kind: 'rss',
+      title: '日报样例：将更新集中到一个窗口',
+      author: '合成 RSS',
+      text: '本条仅用于演示冻结分片与独立投递，不调用真实来源或飞书。',
+      url: '',
+    },
+    [store.source(rss.id)],
+    true,
+    'demo',
+  );
+  store.run('UPDATE deliveries SET created=? WHERE item_id=?', store.now() - 86400000, sample.id);
+  freezeDigest(store, 'demo');
 }
 export function advanceDemo(store: Store) {
   const n =
@@ -87,6 +120,25 @@ export function demoAdapters(store: Store, config: Config): Adapters {
         0,
     );
   return {
+    async rss() {
+      const n = sequence();
+      return {
+        unchanged: false,
+        items: n
+          ? [
+              {
+                key: `rss:demo:${n}`,
+                kind: 'rss' as const,
+                title: `RSS 更新 #${n} · 合成样例`,
+                author: '公开 Feed · 样例',
+                text: '此为模拟 RSS 内容，无外部网络请求。',
+                url: '',
+                published: store.now(),
+              },
+            ]
+          : [],
+      };
+    },
     async feed(channel) {
       channelId(channel);
       const n = sequence();

@@ -1,6 +1,6 @@
 # 技术设计
 
-版本：D1 / 2026-10-16。本文描述计划实现，不包含已经运行的系统。
+版本：D3 / 2026-10-17。已有 v0.2 候选实现；本文区分现有实现、运行限制与后续计划，不代表真实服务已经验收。
 
 ## 1. 架构与技术选择
 
@@ -53,7 +53,8 @@ Worker: 到期调度 -> 来源适配器 -> 规范化条目 -> 待发送记录 ->
 | items | id、kind、canonical_key、标题、来源时间、discovered_at、正文状态、内容版本、保留时间 | canonical_key 唯一；正文删除后仍可保留最小去重标记 |
 | source_items | source_id、item_id、匹配规则版本 | 多规则命中同一邮件只建立一个条目，关联唯一 |
 | jobs | id、kind、resource_id、generation、status、attempt、available_at、lease_token、lease_until、error | 同一资源不并发检查；领取与完成使用租约令牌 |
-| deliveries | id、item_id、destination_ref、status、消息快照、attempt、available_at、lease、结果与时间、人工操作记录 | 首版 `(item_id, destination_ref)` 唯一；显式重发不抹除历史 |
+| deliveries | id、item_id、destination_ref、status、消息快照、mode、batch_id、part_id、attempt、available_at、lease、人工操作记录 | item_id 唯一，首次排队固定路由；分片是独立投递，原始成员指向 part_id |
+| digest_batches | id、slot、timezone、cutoff、created、destination、total_parts | slot 唯一；冻结批次和所有分片/成员在同一事务完成 |
 
 单一飞书应用与指定接收 open_id、单一邮箱账户的凭证保存在环境变量或权限受限的部署 Secret 中，数据库仅存稳定目标指纹。界面不提供完整凭证或收件 ID 回显。应用仅申请出站机器人发送权限；不接收事件、读取聊天历史或查询通讯录。
 
@@ -195,14 +196,15 @@ Feed 不是完整上传日志，停机后无法证明全量覆盖时记录 `cove
 | ADR-04 | Feed 轮询优先 | 延迟确有影响且能维护回调、续订与补查 |
 | ADR-05 | 专用邮箱 IMAP 只读 | 实际邮箱不支持所需授权，再评估 OAuth 或邮件转入 |
 | ADR-06 | 用户2026-10-16确认独立应用机器人单向私聊 | 需要群推送、多人或会话交互时另行评估权限 |
+| ADR-07 | 允许 unknown，不承诺 exactly-once | 平台提供可验证幂等键或投递回查时再增强 |
 
 ## 13. 当前实现与运维
 
-- `server/store.ts`：SQLite schema v1、事务、队列与租约、重试、配额及清理。`server/engine.ts`：采集、游标、规则版本与投递编排。`server/adapters.ts`：RSS、只读 IMAP 与飞书。
+- `server/store.ts`：SQLite schema v2、事务、队列与租约、重试、配额及清理。`server/engine.ts`：采集、游标、规则版本与投递编排。`server/adapters.ts`：YouTube、只读 IMAP 与飞书；公共 Feed 使用 `server/rss.ts`。
 - `server/main.ts` 与 `server/worker.ts` 可分进程运行；开发演示通过 `EMBED_WORKER=1` 合并。独立 Worker 的全局租约确保同数据目录同一时刻只有一个扫描循环，单循环最多处理2个读取任务、5次顺序发送。
 - `web/` 是 Vue 管理工作台；不使用 `v-html` 渲染私人正文，不从网页保存或读回 Secret。
 - 账户标识由 IMAP host/user/folder 计算指纹。修改账户或文件夹需新数据目录，避免复用旧 UID；改授权码不改变身份。暂停/恢复邮件规则会取消旧 mailbox 租约，防止旧扫描覆盖补抓游标。
-- 已有 schema 高于当前程序时拒绝启动；v1 是首个实现，不存在旧业务数据的升级脚本。未来 schema 变更必须新增真实迁移测试，不能直接修改已有数据假装兼容。
+- schema 高于当前程序时拒绝启动。`server/migrations.ts` 在 SQLite 写锁内检查版本并原子升级 v1→v2；已有投递默认即时、旧设置补默认日报时间，不丢历史。旧版表结构迁移与新备份恢复有独立回归测试。升级前停止所有进程并备份，禁止不同版本共用同一数据卷运行。
 
 ### 本地与生产
 
@@ -219,7 +221,6 @@ Docker Compose 已提供双入口与共享卷配置，但本轮未运行容器�
 Docker 卷内备份示例：`docker compose exec worker node dist/scripts/backup.js /app/data/manual.sqlite`。停止服务后可用 `docker compose run --rm --no-deps worker node dist/scripts/restore.js /app/data/manual.sqlite --confirm-stopped` 在同一卷恢复；确认无残留进程后再启动。以上容器命令尚待目标环境实测。
 
 备份含邮件正文，离机保存应加密；删除当前记录不会删除旧备份或完成取证级磁盘擦除。备份保留期由部署者负责，不能上传公开仓库。
-| ADR-07 | 允许 unknown，不承诺 exactly-once | 平台提供可验证幂等键或投递回查时再增强 |
 
 ## 14. 后续 Sift 集成约束
 
@@ -228,3 +229,29 @@ v0.3 才建立摘要适配边界，不在首版提前写空壳框架。摘要仅
 调用缓存至少包含内容哈希、摘要模式、模型及提示版本。所有分块、修复、合并、失败重试计入同一可见预算；只有标题/简介时不能声称总结完整视频。保留明确的内容来源、引文位置和模型错误，摘要失败降级为原始条目。
 
 远程 Sift 接口必须经过认证并限制调用来源；不能假定现有公开摘要接口天然适合私人邮件。集成前还需验证完整正文、字幕可用性、成本与外发许可。
+
+## 15. v0.2 实现细节
+
+### 日报路由与冻结
+
+`sources.delivery_mode` 为 immediate/digest。内容首次排队以当前有效匹配来源决定路由，多规则优先即时；后续模式切换不修改既有投递。即时进入 pending，日报进入 digest_wait。预览快照在首次排队保存；后续标题/正文编辑更新条目，但不暗改待投递快照。
+
+`server/digest.ts` 使用 Luxon 计算配置时区最近到期的本地窗口，按投递创建/发现时间而非不可靠发布时间选取未分配成员。空窗口也登记 slot，防止同一窗口重复冻结。停机恢复只冻结最近到期窗口，不为每个错过日期补发空消息；未分配且未过期的积压仍可纳入。
+
+冻结事务创建 digest_batches、最多500个成员指针与分片；每片最多10条、内容预算3300字符再加短标题，小于既有4000字符发送上限，不截断条目链接。超量留待下一窗口，异常单条过长转明确失败。日报分片以内部 digest 条目承载，复用原 deliveries/attempts 的配额、租约、unknown 和重试，不另造发送队列。digest 条目不计入内容列表/收录统计。原始成员置 batched 并指向分片，API 透出分片的有效投递状态和尝试记录。
+
+暂停来源会取消包含已撤销成员的未发分片并清理快照，不原地改写或自动重组，因此其他成员也可能被取消；前端暂停和删除确认明确说明。任一邮件成员到期时连同分片正文/快照清理；部分成功、unknown 和 cancelled 分别展示。目标指纹变化不自动迁移积压；显式重发按分片确认、保留历史且仍受每日额度限制。
+
+### RSS 网络边界
+
+`server/rss.ts` 使用成熟 rss-parser 解析 RSS/Atom、Node HTTPS/TLS 建立连接、ipaddr.js 判定地址范围。仅接受公开 HTTPS Feed，无用户信息、查询参数、自定义端口和私有 Token。条目可使用带查询参数的 HTTPS 原文链接，但不会跟随抓取。相同 Feed 用 GUID/ID/有效链接生成稳定哈希，不跨不同 Feed 自动合并文章。
+
+DNS lookup 的全部 A/AAAA 地址均须为公网 unicast；IPv4-mapped IPv6 和特殊地址同样拒绝。将这批已验证地址直接交给 socket，而非先检查再二次解析，避免 DNS rebinding；TLS 仍验证原域名证书。每跳重定向重新验证 URL 和 DNS，最多3次。每次请求15秒超时、16KB头部和2MB正文上限，禁用压缩，只支持 UTF-8/ASCII，拒绝 DTD/实体声明，不加载图片或附件，不自动读取代理配置。
+
+安全依据参考 [OWASP SSRF 防护](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)，时区与夏令时行为使用 [Luxon](https://moment.github.io/luxon/api-docs/index.html)，不是手写日期偏移或 IP 正则。
+
+### 配置迁移
+
+`server/portable.ts` 采用版本化白名单 JSON，仅含来源定义/投递方式；邮箱账户引用为 default。导出 RSS URL 需单独确认，默认省略。导入先校验全文件与数量、生成预览哈希；提交重新校验并比较哈希。哈希只绑定文件内容，不是权限凭证；写操作仍依赖会话、Origin 和 CSRF。
+
+应用导入在单事务内跳过现存/文件内重复项，全部新增来源暂停且关闭通知，没有网络请求；拒绝凭证、游标、enabled 等字段。文件上限30KB、最多25项，且满足10频道、10 RSS、5邮件规则上限。导出文件仍可能含私人发件地址，不能自动上传 Git。恢复支持 v1/v2 备份，先升级复制出的临时库，待发日报成员和分片转 unknown，禁止陈旧快照盲目回放。

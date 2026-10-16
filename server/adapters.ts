@@ -5,6 +5,7 @@ import sanitizeHtml from 'sanitize-html';
 import { createHash } from 'node:crypto';
 import { AppError, preview, type Config } from './config.js';
 import type { Incoming, Source } from './store.js';
+import { feedUrl } from './rss.js';
 
 export function channelId(input: string) {
   let id = input.trim();
@@ -26,7 +27,8 @@ export function channelId(input: string) {
   return id;
 }
 export function normalizeSource(input: Record<string, unknown>) {
-  if (!['youtube', 'email'].includes(String(input.type))) throw new AppError('INVALID_SOURCE_TYPE');
+  if (!['youtube', 'email', 'rss'].includes(String(input.type)))
+    throw new AppError('INVALID_SOURCE_TYPE');
   const name = String(input.name || '').trim();
   if (!name || name.length > 100) throw new AppError('INVALID_SOURCE_NAME');
   const sender = String(input.sender || '')
@@ -40,12 +42,16 @@ export function normalizeSource(input: Record<string, unknown>) {
       subject.length > 200)
   )
     throw new AppError('INVALID_MAIL_RULE');
+  if (!['immediate', 'digest'].includes(String(input.delivery_mode || 'immediate')))
+    throw new AppError('INVALID_DELIVERY_MODE');
   return {
     type: input.type as Source['type'],
     name,
     channel: input.type === 'youtube' ? channelId(String(input.channel || '')) : '',
     sender: input.type === 'email' ? sender : '',
     subject: input.type === 'email' ? subject : '',
+    feed_url: input.type === 'rss' ? feedUrl(String(input.feed_url || '')) : '',
+    delivery_mode: (input.delivery_mode || 'immediate') as Source['delivery_mode'],
   };
 }
 export function matches(

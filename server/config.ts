@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
+import { DateTime } from 'luxon';
 
 export class AppError extends Error {
   constructor(
@@ -97,11 +98,15 @@ export const defaults = {
   dailyLimit: 50,
   mailDays: 7,
   itemDays: 30,
+  digestTime: '10:30',
 };
 export type Settings = typeof defaults;
 export function validateSettings(input: Settings) {
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.digestTime))
+    throw new AppError('INVALID_DIGEST_TIME');
   try {
     new Intl.DateTimeFormat('en', { timeZone: input.timezone }).format();
+    if (!DateTime.now().setZone(input.timezone).isValid) throw new Error('INVALID_TIMEZONE');
   } catch {
     throw new AppError('INVALID_TIMEZONE');
   }

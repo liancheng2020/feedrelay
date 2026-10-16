@@ -932,3 +932,113 @@ label select {
     padding: 0 15px;
   }
 }
+.source-icon.rss {
+  color: #855b9b;
+  background: #f0eaf5;
+}
+.transfer-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-bottom: 20px;
+}
+.mode-picker {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #75877d;
+  margin-bottom: 12px;
+}
+.mode-picker select {
+  width: 120px;
+  min-height: 32px;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.digest-schedule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid #dfe6e1;
+  border-bottom: 1px solid #dfe6e1;
+  padding: 18px 0;
+  margin-bottom: 25px;
+  flex-wrap: wrap;
+}
+.digest-schedule button {
+  margin-left: auto;
+}
+.digest-list article {
+  border-top: 1px solid #dfe6e1;
+  padding: 22px 0;
+}
+.digest-list header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.digest-list h2 {
+  font-size: 16px;
+  margin-bottom: 5px;
+}
+.digest-part {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 0;
+  border-top: 1px solid #e6ece8;
+  flex-wrap: wrap;
+}
+.digest-part button {
+  margin-left: auto;
+  font-size: 12px;
+}
+.import-preview {
+  margin-top: 20px;
+  border-top: 1px solid #dfe6e1;
+  padding-top: 15px;
+}
+.import-preview ul {
+  max-height: 220px;
+  overflow: auto;
+  padding: 0;
+  list-style: none;
+}
+.import-preview li {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #e6ece8;
+}
+.import-preview li > span:first-child {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.badge.digest_wait {
+  color: #855b9b;
+  background: #f0eaf5;
+}
+@media (max-width: 700px) {
+  .sidebar nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .digest-schedule {
+    font-size: 12px;
+  }
+  .digest-part {
+    gap: 8px;
+  }
+  .digest-part .muted {
+    width: 100%;
+  }
+  .transfer-actions {
+    justify-content: flex-start;
+  }
+}

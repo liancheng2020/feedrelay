@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import TransferDialog from './TransferDialog.vue';
 import {
   Rss,
   CirclePlay as Youtube,
@@ -21,6 +22,9 @@ import {
   Check,
   AlertTriangle,
   LoaderCircle,
+  CalendarDays,
+  Upload,
+  Download,
 } from '@lucide/vue';
 
 interface Source {
@@ -30,6 +34,8 @@ interface Source {
   channel: string;
   sender: string;
   subject: string;
+  feed_url: string;
+  delivery_mode: string;
   enabled: number;
   notify: number;
   initialized: number;
@@ -61,6 +67,7 @@ interface Detail extends Item {
     error: string;
     resolution: string;
     attempt: number;
+    mode: string;
   } | null;
   attempts: { n: number; at: number; status: string; code: string }[];
 }
@@ -80,6 +87,7 @@ interface Prefs {
   dailyLimit: number;
   mailDays: number;
   itemDays: number;
+  digestTime: string;
 }
 interface Overview {
   demo: boolean;
@@ -107,7 +115,27 @@ const page = ref(1),
   detail = ref<Detail | null>(null);
 const editor = ref(false),
   editing = ref(''),
-  form = ref({ type: 'youtube', name: '', channel: '', sender: '', subject: '' });
+  form = ref({
+    type: 'youtube',
+    name: '',
+    channel: '',
+    sender: '',
+    subject: '',
+    feed_url: '',
+    delivery_mode: 'immediate',
+    publicConfirmed: false,
+  });
+interface Digest {
+  id: string;
+  slot: string;
+  timezone: string;
+  cutoff: number;
+  total_parts: number;
+  members: number;
+  parts: { id: string; item_id: string; status: string; error: string; resolution: string }[];
+}
+const digests = ref<Digest[]>([]),
+  transfer = ref('');
 const activation = ref<Source | null>(null),
   notify = ref(false),
   consent = ref(false),
@@ -122,6 +150,7 @@ const preferences = ref<Prefs>({
   dailyLimit: 50,
   mailDays: 7,
   itemDays: 30,
+  digestTime: '10:30',
 });
 const labels: Record<string, string> = {
   discovered: '仅采集',
@@ -134,8 +163,23 @@ const labels: Record<string, string> = {
   cancelled: '已取消',
   succeeded: '检查通过',
   running: '检查中',
+  digest_wait: '等待日报',
+  batched: '已纳入日报',
 };
 const errors: Record<string, string> = {
+  INVALID_FEED_URL: '请输入有效的公开 RSS 地址。',
+  PUBLIC_HTTPS_FEED_REQUIRED: '仅支持不含账号、查询参数或片段的公开 HTTPS Feed。',
+  RSS_PRIVATE_ADDRESS: 'RSS 地址解析到私有或特殊网络，已阻止连接。',
+  RSS_NETWORK_ERROR: 'RSS 连接失败，请检查来源和服务器网络。',
+  RSS_ENTRY_ID_REQUIRED: 'Feed 条目缺少稳定 ID 或有效原文链接。',
+  RSS_REDIRECT_LIMIT: 'RSS 重定向次数超限。',
+  INVALID_IMPORT: '配置文件格式或数量无效。',
+  IMPORT_UNSUPPORTED_FIELD: '配置含不支持字段或账户引用；不能导入凭证和运行状态。',
+  IMPORT_PREVIEW_CHANGED: '配置已变化，请重新预览。',
+  PUBLIC_FEED_CONFIRMATION_REQUIRED: '请确认 RSS 是不含私人 Token 的公开订阅。',
+  INVALID_DIGEST_TIME: '日报时间格式应为 HH:mm。',
+  DIGEST_MEMBER_DISABLED: '来源已停用，受影响的未发送日报分片已整体取消。',
+  DIGEST_ENTRY_TOO_LONG: '条目过长，无法安全纳入日报。',
   INVALID_PASSWORD: '密码不正确。',
   LOGIN_RATE_LIMITED: '登录尝试过多，请15分钟后重试。',
   UNAUTHORIZED: '会话已过期，请重新登录。',
@@ -169,20 +213,50 @@ const errors: Record<string, string> = {
   DELIVERY_NOT_RESOLVABLE: '记录状态已变化，请刷新查看。',
 };
 const explain = (code: string) => errors[code] || code;
+const deliveryLabels = Object.fromEntries(
+  Object.entries(labels).filter(([key]) => !['running', 'succeeded', 'batched'].includes(key)),
+);
+const zonedTime = (value: number, zone: string) =>
+  new Date(value).toLocaleString('zh-CN', { timeZone: zone, hour12: false });
 const time = (value: number | string | null | undefined) =>
   value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '尚无记录';
 const heading = computed(
-  () => ({ updates: '最新更新', sources: '订阅源', settings: '投递设置' })[view.value],
+  () =>
+    ({ updates: '最新更新', sources: '订阅源', settings: '投递设置', digests: '每日日报' })[
+      view.value
+    ],
 );
 const modalOpen = computed(
   () =>
-    !!(editor.value || detail.value || activation.value || deletion.value || confirmation.value),
+    !!(
+      editor.value ||
+      detail.value ||
+      activation.value ||
+      deletion.value ||
+      confirmation.value ||
+      transfer.value
+    ),
 );
 let previousFocus: HTMLElement | null = null;
-watch(modalOpen, async (open) => {
+const modalLayer = computed(() =>
+  confirmation.value
+    ? 'confirmation'
+    : transfer.value
+      ? 'transfer'
+      : editor.value
+        ? 'editor'
+        : activation.value
+          ? 'activation'
+          : deletion.value
+            ? 'deletion'
+            : detail.value
+              ? 'detail'
+              : '',
+);
+watch(modalLayer, async (open, before) => {
   document.body.style.overflow = open ? 'hidden' : '';
   if (open) {
-    previousFocus = document.activeElement as HTMLElement;
+    if (!before) previousFocus = document.activeElement as HTMLElement;
     await nextTick();
     document.querySelector<HTMLElement>('.overlay:last-child button')?.focus();
   } else previousFocus?.focus();
@@ -192,13 +266,15 @@ function keyboard(event: KeyboardEvent) {
   if (event.key === 'Escape' && !busy.value) {
     confirmation.value
       ? (confirmation.value = null)
-      : editor.value
-        ? (editor.value = false)
-        : activation.value
-          ? (activation.value = null)
-          : deletion.value
-            ? (deletion.value = null)
-            : (detail.value = null);
+      : transfer.value
+        ? (transfer.value = '')
+        : editor.value
+          ? (editor.value = false)
+          : activation.value
+            ? (activation.value = null)
+            : deletion.value
+              ? (deletion.value = null)
+              : (detail.value = null);
   }
   if (event.key === 'Tab') {
     const dialogs = document.querySelectorAll<HTMLElement>('[role="dialog"]'),
@@ -235,6 +311,7 @@ async function load() {
   overview.value = o;
   sources.value = await api<Source[]>('/sources');
   jobs.value = await api<Job[]>('/jobs');
+  digests.value = await api<Digest[]>('/digests');
   const result = await api<{ items: Item[]; total: number }>(
     `/items?page=${page.value}&source=${encodeURIComponent(sourceFilter.value)}&status=${statusFilter.value}`,
   );
@@ -278,8 +355,26 @@ async function logout() {
 function add(s?: Source) {
   editing.value = s?.id || '';
   form.value = s
-    ? { type: s.type, name: s.name, channel: s.channel, sender: s.sender, subject: s.subject }
-    : { type: 'youtube', name: '', channel: '', sender: '', subject: '' };
+    ? {
+        type: s.type,
+        name: s.name,
+        channel: s.channel,
+        sender: s.sender,
+        subject: s.subject,
+        feed_url: s.feed_url,
+        delivery_mode: s.delivery_mode,
+        publicConfirmed: false,
+      }
+    : {
+        type: 'youtube',
+        name: '',
+        channel: '',
+        sender: '',
+        subject: '',
+        feed_url: '',
+        delivery_mode: 'immediate',
+        publicConfirmed: false,
+      };
   editor.value = true;
 }
 async function save() {
@@ -312,9 +407,34 @@ async function enable() {
   }, '已启用，首次检查将建立静默基线。');
 }
 async function pause(s: Source) {
+  confirmation.value = {
+    title: '暂停采集？',
+    text: '未发送内容将取消；包含此来源的未发送日报分片会整体取消，其中其他来源的成员也不会再发送。已发送或发送中的消息无法撤回。',
+    run: async () => {
+      await api(`/sources/${s.id}/toggle`, 'POST', { enabled: false, notify: false });
+    },
+  };
+}
+function changeMode(s: Source, event: Event) {
+  const target = event.target as HTMLSelectElement,
+    mode = target.value;
+  target.value = s.delivery_mode;
+  confirmation.value = {
+    title: mode === 'digest' ? '切换为日报？' : '切换为即时？',
+    text: '仅影响后续新排队内容；已有积压保持原投递方式，不会双重发送。',
+    run: async () => {
+      await api(`/sources/${s.id}/delivery-mode`, 'POST', { mode, confirmed: true });
+    },
+  };
+}
+async function inspectPart(id: string) {
   await act(async () => {
-    await api(`/sources/${s.id}/toggle`, 'POST', { enabled: false, notify: false });
-  }, '已暂停，未发送的独占队列已取消。');
+    detail.value = await api<Detail>(`/items/${id}`);
+  });
+}
+async function imported() {
+  transfer.value = '';
+  await act(load, '配置已导入，所有新增来源保持暂停。');
 }
 async function remove() {
   const s = deletion.value;
@@ -445,6 +565,9 @@ onUnmounted(() => {
         ><button :class="{ active: view === 'settings' }" @click="switchView('settings')">
           <Settings :size="19" />投递设置
         </button>
+        <button :class="{ active: view === 'digests' }" @click="switchView('digests')">
+          <CalendarDays :size="19" />每日日报
+        </button>
       </nav>
       <div class="sidebar-bottom">
         <span class="connection"
@@ -523,12 +646,7 @@ onUnmounted(() => {
           ><label
             >投递状态<select v-model="statusFilter" @change="filter">
               <option value="">全部状态</option>
-              <option
-                v-for="(name, key) in labels"
-                :key="key"
-                :value="key"
-                v-show="!['running', 'succeeded'].includes(key)"
-              >
+              <option v-for="(name, key) in deliveryLabels" :key="key" :value="key">
                 {{ name }}
               </option>
             </select></label
@@ -543,7 +661,10 @@ onUnmounted(() => {
         <section v-else class="item-list" aria-label="更新记录">
           <article v-for="item in items" :key="item.id">
             <div class="source-icon" :class="item.kind">
-              <Youtube v-if="item.kind === 'youtube'" :size="21" /><Mail v-else :size="20" />
+              <Youtube v-if="item.kind === 'youtube'" :size="21" /><Rss
+                v-else-if="item.kind === 'rss'"
+                :size="20"
+              /><Mail v-else :size="20" />
             </div>
             <div class="item-main">
               <div class="item-meta">
@@ -593,7 +714,47 @@ onUnmounted(() => {
           </button>
         </footer>
       </template>
+      <template v-if="view === 'digests'">
+        <div class="digest-schedule">
+          <CalendarDays :size="20" /><span
+            >每天 {{ overview?.settings.digestTime }} · {{ overview?.settings.timezone }}</span
+          ><button @click="switchView('settings')">调整时间</button>
+        </div>
+        <div v-if="!digests.length" class="empty">
+          <CalendarDays :size="34" />
+          <h2>暂无日报批次</h2>
+          <p>来源选择日报并启用推送后，新内容等待下一个本地时间窗口。</p>
+          <button @click="switchView('sources')">管理订阅源<ChevronRight :size="16" /></button>
+        </div>
+        <section class="digest-list">
+          <article v-for="batch in digests" :key="batch.id">
+            <header>
+              <div>
+                <h2>{{ zonedTime(batch.cutoff, batch.timezone) }}</h2>
+                <p class="muted">
+                  {{ batch.timezone }} · {{ batch.members }} 条内容 · {{ batch.total_parts }} 个分片
+                </p>
+              </div>
+              <span v-if="!batch.total_parts" class="badge">无更新，不发送</span>
+            </header>
+            <div v-for="(part, index) in batch.parts" :key="part.id" class="digest-part">
+              <span>分片 {{ index + 1 }}/{{ batch.total_parts }}</span
+              ><span class="badge" :class="part.status">{{
+                part.resolution === 'user_acknowledged' ? '已人工核查' : labels[part.status]
+              }}</span
+              ><span class="muted">{{ part.error ? explain(part.error) : '' }}</span
+              ><button @click="inspectPart(part.item_id)">
+                查看分片<ChevronRight :size="16" />
+              </button>
+            </div>
+          </article>
+        </section>
+      </template>
       <template v-if="view === 'sources'">
+        <div class="transfer-actions">
+          <button @click="transfer = 'import'"><Upload :size="16" />导入配置</button
+          ><button @click="transfer = 'export'"><Download :size="16" />导出配置</button>
+        </div>
         <p class="section-note">先添加、检查，再启用。YouTube 只订阅视频标题与简介，不提取字幕。</p>
         <div v-if="!sources.length" class="empty">
           <Rss :size="34" />
@@ -603,7 +764,10 @@ onUnmounted(() => {
         <section class="source-list">
           <article v-for="s in sources" :key="s.id" class="source-row">
             <div class="source-icon" :class="s.type">
-              <Youtube v-if="s.type === 'youtube'" :size="22" /><Mail v-else :size="21" />
+              <Youtube v-if="s.type === 'youtube'" :size="22" /><Rss
+                v-else-if="s.type === 'rss'"
+                :size="21"
+              /><Mail v-else :size="21" />
             </div>
             <div class="source-main">
               <div class="source-heading">
@@ -614,9 +778,19 @@ onUnmounted(() => {
                 ><span v-if="s.enabled" class="muted">{{ s.notify ? '私聊推送' : '仅采集' }}</span>
               </div>
               <p class="identifier">
-                {{ s.type === 'youtube' ? s.channel : s.sender
+                {{ s.type === 'youtube' ? s.channel : s.type === 'rss' ? s.feed_url : s.sender
                 }}<span v-if="s.subject"> · 主题包含“{{ s.subject }}”</span>
               </p>
+              <label class="mode-picker"
+                >投递方式<select
+                  :value="s.delivery_mode"
+                  :disabled="busy"
+                  @change="changeMode(s, $event)"
+                >
+                  <option value="immediate">即时通知</option>
+                  <option value="digest">每日日报</option>
+                </select></label
+              >
               <div class="source-times">
                 <span>最近成功 {{ time(s.last_success) }}</span
                 ><span v-if="s.enabled">{{ s.initialized ? '基线已建立' : '等待首次基线' }}</span
@@ -712,9 +886,12 @@ onUnmounted(() => {
           "
         >
           <h2>采集与保留</h2>
-          <label>统计时区<input v-model="preferences.timezone" required /></label
+          <label
+            >日报时间（所选时区）<input v-model="preferences.digestTime" type="time" required
+          /></label>
+          <label>统计与日报时区<input v-model="preferences.timezone" required /></label
           ><label
-            >YouTube 检查间隔（分钟）<input
+            >频道 / RSS 检查间隔（分钟）<input
               v-model.number="preferences.youtubeMinutes"
               type="number"
               min="5"
@@ -758,7 +935,15 @@ onUnmounted(() => {
     <div v-if="detail" class="overlay" @click.self="detail = null">
       <section class="drawer" role="dialog" aria-modal="true" aria-label="内容详情">
         <header>
-          <span class="eyebrow">{{ detail.kind === 'email' ? '邮件详情' : '视频简介' }}</span
+          <span class="eyebrow">{{
+            detail.kind === 'email'
+              ? '邮件详情'
+              : detail.kind === 'digest'
+                ? '日报分片'
+                : detail.kind === 'rss'
+                  ? 'RSS 条目'
+                  : '视频简介'
+          }}</span
           ><button class="icon" aria-label="关闭详情" @click="detail = null">
             <X :size="20" />
           </button>
@@ -775,6 +960,9 @@ onUnmounted(() => {
         <p v-if="detail.delivery?.error" class="alert error">
           {{ explain(detail.delivery.error) }}
         </p>
+        <p v-if="detail.delivery?.mode === 'digest_part'" class="section-note">
+          此记录属于日报分片。核查与重发作用于整个分片，不会单独发送某一成员。
+        </p>
         <p class="body-text">{{ detail.expired ? '正文已过保留期。' : detail.text }}</p>
         <a
           v-if="detail.url"
@@ -782,9 +970,11 @@ onUnmounted(() => {
           target="_blank"
           rel="noopener noreferrer"
           class="external"
-          >查看 YouTube 原视频<ArrowUpRight :size="17"
+          >查看来源原文<ArrowUpRight :size="17"
         /></a>
-        <p v-else class="muted">邮件无公共链接，请在邮箱按发件地址与主题查看原文。</p>
+        <p v-else-if="detail.kind === 'email'" class="muted">
+          邮件无公共链接，请在邮箱按发件地址与主题查看原文。
+        </p>
         <section class="attempts">
           <h3>发送记录</h3>
           <p v-if="!detail.attempts.length" class="muted">尚无发送尝试。</p>
@@ -825,6 +1015,13 @@ onUnmounted(() => {
             >
               <Mail :size="18" />邮件规则
             </button>
+            <button
+              type="button"
+              :class="{ selected: form.type === 'rss' }"
+              @click="form.type = 'rss'"
+            >
+              <Rss :size="18" />RSS
+            </button>
           </div>
           <label>名称<input v-model="form.name" required maxlength="100" /></label
           ><label v-if="form.type === 'youtube'"
@@ -833,7 +1030,7 @@ onUnmounted(() => {
               :disabled="!!editing"
               required
               placeholder="UC… / https://www.youtube.com/channel/UC…" /></label
-          ><template v-else
+          ><template v-else-if="form.type === 'email'"
             ><label
               >发件邮箱地址<input
                 v-model="form.sender"
@@ -843,6 +1040,28 @@ onUnmounted(() => {
                 placeholder="newsletter@example.com" /></label
             ><label>主题关键词（可选）<input v-model="form.subject" maxlength="200" /></label
           ></template>
+          <template v-else
+            ><label
+              >公开 RSS / Atom 地址<input
+                v-model="form.feed_url"
+                type="url"
+                required
+                :disabled="!!editing"
+                placeholder="https://site.com/feed.xml" /></label
+            ><label v-if="!editing" class="check-row disclosure"
+              ><input
+                v-model="form.publicConfirmed"
+                type="checkbox"
+                required
+              />我确认此地址公开且不含私人 Token。</label
+            ></template
+          >
+          <label v-if="!editing"
+            >投递方式<select v-model="form.delivery_mode" aria-label="投递方式">
+              <option value="immediate">即时通知</option>
+              <option value="digest">每日日报</option>
+            </select></label
+          >
           <p class="muted">
             {{
               editing
@@ -896,7 +1115,9 @@ onUnmounted(() => {
           <h2>删除 {{ deletion.name }}？</h2>
           <button class="icon" aria-label="关闭" @click="deletion = null"><X :size="20" /></button>
         </header>
-        <p>停止采集并取消未发送内容；其他订阅源仍关联的记录会保留。</p>
+        <p>
+          停止采集并取消未发送内容；受影响的未发送日报分片整体取消。其他订阅源仍关联的正文记录会保留，已发送消息无法撤回。
+        </p>
         <label class="check-row"
           ><input v-model="erase" type="checkbox" />同时清理仅属于此源的历史正文与元数据</label
         >
@@ -924,5 +1145,12 @@ onUnmounted(() => {
         </div>
       </section>
     </div>
+    <TransferDialog
+      v-if="transfer"
+      :action="transfer"
+      :call="api"
+      @close="transfer = ''"
+      @done="imported"
+    />
   </div>
 </template>

@@ -18,6 +18,8 @@ import { Store, type Item, type Delivery } from './store.js';
 import { Engine } from './engine.js';
 import { normalizeSource } from './adapters.js';
 import { advanceDemo } from './demo.js';
+import { listDigests } from './digest.js';
+import { exportSources, previewImport, applyImport } from './portable.js';
 
 const bool = (v: unknown) => {
   if (typeof v !== 'boolean') throw new AppError('INVALID_BOOLEAN');
@@ -155,6 +157,11 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   });
   router.post('/api/sources', (ctx) => {
     const input = normalizeSource(ctx.request.body as Record<string, unknown>);
+    if (
+      input.type === 'rss' &&
+      (ctx.request.body as { publicConfirmed?: boolean }).publicConfirmed !== true
+    )
+      throw new AppError('PUBLIC_FEED_CONFIRMATION_REQUIRED');
     const count = store.sources().filter((s) => s.type === input.type).length;
     if (count >= (input.type === 'email' ? 5 : 10)) throw new AppError('SOURCE_LIMIT');
     ctx.status = 201;
@@ -168,8 +175,34 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       type: current.type,
       channel: current.channel,
       sender: current.sender,
+      feed_url: current.feed_url,
     });
     ctx.body = store.edit(current.id, input);
+  });
+  router.post('/api/sources/:id/delivery-mode', (ctx) => {
+    const body = ctx.request.body as { mode?: string; confirmed?: boolean };
+    if (body.confirmed !== true || !['immediate', 'digest'].includes(body.mode || ''))
+      throw new AppError('MODE_CONFIRMATION_REQUIRED');
+    ctx.body = store.changeDeliveryMode(String(ctx.params.id), body.mode as 'immediate' | 'digest');
+  });
+  router.get('/api/sources/export', (ctx) => {
+    ctx.body = exportSources(store, ctx.query.includePublicFeeds === 'confirmed');
+  });
+  router.post('/api/sources/import-preview', (ctx) => {
+    ctx.body = previewImport(store, ctx.request.body);
+  });
+  router.post('/api/sources/import', (ctx) => {
+    const body = ctx.request.body as {
+      bundle?: unknown;
+      hash?: string;
+      confirmed?: boolean;
+      confirmedPublic?: boolean;
+    };
+    if (body.confirmed !== true) throw new AppError('IMPORT_CONFIRMATION_REQUIRED');
+    ctx.body = applyImport(store, body.bundle, body.hash || '', body.confirmedPublic === true);
+  });
+  router.get('/api/digests', (ctx) => {
+    ctx.body = listDigests(store);
   });
   router.post('/api/sources/:id/toggle', (ctx) => {
     const input = ctx.request.body as {
@@ -220,30 +253,32 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     const page = Math.max(1, Math.min(100_000, Math.floor(Number(ctx.query.page) || 1)));
     const status = String(ctx.query.status || ''),
       source = String(ctx.query.source || '');
-    const where = `WHERE (?='' OR COALESCE(d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
+    const joins =
+      'items i LEFT JOIN deliveries d ON d.item_id=i.id LEFT JOIN deliveries p ON p.id=d.part_id';
+    const where = `WHERE i.kind<>'digest' AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
     const params = [status, status, source, source];
     ctx.body = {
       page,
-      total: store.get(
-        `SELECT count(*) n FROM items i LEFT JOIN deliveries d ON d.item_id=i.id ${where}`,
-        ...params,
-      )!.n,
+      total: store.get(`SELECT count(*) n FROM ${joins} ${where}`, ...params)!.n,
       items: store
         .all<
           Item & Partial<Delivery>
-        >(`SELECT i.*,d.id AS delivery_id,d.status,d.attempt,d.error,d.sent,d.available,d.resolution FROM items i LEFT JOIN deliveries d ON d.item_id=i.id ${where} ORDER BY i.discovered DESC,i.rowid DESC LIMIT 30 OFFSET ?`, ...params, (page - 1) * 30)
+        >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY i.discovered DESC,i.rowid DESC LIMIT 30 OFFSET ?`, ...params, (page - 1) * 30)
         .map((i) => ({ ...i, text: preview(i.text) })),
     };
   });
   router.get('/api/items/:id', (ctx) => {
     const item = store.get<Item>('SELECT * FROM items WHERE id=?', String(ctx.params.id));
     if (!item) throw new AppError('ITEM_NOT_FOUND', 404);
-    const d = store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id);
+    let d = store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id);
+    if (d?.part_id) d = store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.part_id);
     ctx.body = {
       ...item,
       delivery: d
         ? {
             id: d.id,
+            mode: d.mode,
+            batch_id: d.batch_id,
             status: d.status,
             error: d.error,
             resolution: d.resolution,

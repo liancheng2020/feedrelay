@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { copyFile, readFile, mkdir, rename, unlink, open, chmod, access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { migrateV2 } from '../server/migrations.js';
 
 const source = process.argv[2];
 if (!source || !process.argv.includes('--confirm-stopped'))
@@ -31,11 +32,12 @@ try {
   try {
     if (
       db.prepare('PRAGMA integrity_check').get()?.integrity_check !== 'ok' ||
-      db.prepare('PRAGMA user_version').get()?.user_version !== 1
+      ![1, 2].includes(Number(db.prepare('PRAGMA user_version').get()?.user_version))
     )
       throw new Error('INVALID_BACKUP');
+    migrateV2(db);
     db.exec(
-      `BEGIN IMMEDIATE; UPDATE deliveries SET status='unknown',error='RESTORED_NEEDS_REVIEW',token='',lease=0 WHERE status IN ('pending','sending','retry_wait','unknown'); DELETE FROM locks; UPDATE jobs SET status='retry_wait',token='',lease=0 WHERE status='running'; COMMIT; PRAGMA wal_checkpoint(TRUNCATE);`,
+      `BEGIN IMMEDIATE; UPDATE deliveries SET status='unknown',error='RESTORED_NEEDS_REVIEW',token='',lease=0 WHERE status IN ('pending','sending','retry_wait','unknown','digest_wait'); DELETE FROM locks; UPDATE jobs SET status='retry_wait',token='',lease=0 WHERE status='running'; COMMIT; PRAGMA wal_checkpoint(TRUNCATE);`,
     );
   } finally {
     db.close();
