@@ -25,7 +25,7 @@ Worker: 到期调度 -> 来源适配器 -> 规范化条目 -> 待发送记录 ->
 | 运行 | 同仓库 Web 与 Worker 两个入口 | 相同应用镜像，独立进程，挂载同一节点的数据卷 |
 | 调度与发送 | 数据库任务 + 持久化待发送表 | 暂不引入 Redis 或外部队列 |
 
-依赖的具体版本、SQLite 驱动和会话组件在开发 M1 时核对维护状态、Node 兼容性与许可证后锁定；不因本文列出名称而跳过安全检查。
+实现使用 Node.js 24 自带 `node:sqlite`、Koa + koa-session、Vue3 + Vite；依赖精确锁定于 package-lock.json。Vue 类型工具暂不兼容 TypeScript 7 的导出结构，固定 TypeScript 5.9.3 并通过类型检查，避免只追新版本。
 
 首版不提供公开账户注册。使用成熟会话组件实现单用户登录，环境配置密码哈希；会话 Cookie 使用 HttpOnly、适当的 SameSite、生产 HTTPS 下 Secure。修改接口检查 Origin 与 CSRF，密码和会话值不写日志。
 
@@ -55,7 +55,7 @@ Worker: 到期调度 -> 来源适配器 -> 规范化条目 -> 待发送记录 ->
 | jobs | id、kind、resource_id、generation、status、attempt、available_at、lease_token、lease_until、error | 同一资源不并发检查；领取与完成使用租约令牌 |
 | deliveries | id、item_id、destination_ref、status、消息快照、attempt、available_at、lease、结果与时间、人工操作记录 | 首版 `(item_id, destination_ref)` 唯一；显式重发不抹除历史 |
 
-单一飞书目标和单一邮箱账户的凭证保存在环境变量或权限受限的部署 Secret 中，数据库仅存稳定引用。界面不提供完整凭证回显。
+单一飞书应用与指定接收 open_id、单一邮箱账户的凭证保存在环境变量或权限受限的部署 Secret 中，数据库仅存稳定目标指纹。界面不提供完整凭证或收件 ID 回显。应用仅申请出站机器人发送权限；不接收事件、读取聊天历史或查询通讯录。
 
 重要索引：待执行任务的状态和 available_at、待发送状态和 available_at、来源检查时间、内容 canonical_key、账户/文件夹游标。仅在有必要的查询上建索引。
 
@@ -132,11 +132,11 @@ Feed 不是完整上传日志，停机后无法证明全量覆盖时记录 `cove
 | --- | --- |
 | HTTP 与飞书业务结果均明确成功 | 记录 sent，表示平台确认接收，不表示用户已读 |
 | 能确认未送出的连接失败，或平台明确拒绝且允许重试 | 限次进入 retry_wait |
-| 无效签名、目标或权限 | failed，提示修正，不无限重试 |
+| 无效应用凭证、目标或权限 | failed，提示修正，不无限重试 |
 | 发送超时、响应无法判定，或发送过程中进程退出 | unknown，不自动当作确定失败重发 |
 | 平台已接收但本地确认落库失败 | 恢复后仍按 unknown 处理，不能伪造确定结果 |
 
-使用持久化的消息快照和尝试记录，重试不改变收件人、不重新抓取、不重新摘要。HTTP 200 不自动等于业务成功；具体错误码、限流和签名规则在 M4 对照飞书官方说明验证。
+使用持久化的消息快照和尝试记录，自动重试不改变收件人、不重新抓取、不重新摘要。HTTP 200 不自动等于业务成功；应用机器人先获取 tenant_access_token，再调用 im/v1/messages，固定 receive_id_type=open_id。仅 code=0 且 HTTP 成功标记 sent；发送5xx、超时或断线保守记 unknown。明确429或发送前 token 获取失败才可按预算重试。目标指纹变化阻止旧队列外发；人工重发需重新确认。
 
 发送前检查目标、来源是否有效和每日剩余额度，以短事务领取和保留额度，避免多任务超过上限。结果不明也计入本日尝试额度；取消未发送预留时按事务回收。
 
@@ -172,7 +172,7 @@ Feed 不是完整上传日志，停机后无法证明全量覆盖时记录 `cove
 - YouTube 首版使用受控主机和路径；解析库只解析已安全取得的内容。未来通用 RSS 开放前，必须验证协议、DNS、重定向目标、私网/环回/云元数据地址与响应上限，防 DNS 重绑定。
 - 邮箱服务器仅部署管理员配置，不接受邮件内容或普通订阅表单指定新的内网连接目标；保留 TLS 验证。
 - 飞书端点采用预期官方域名，不把邮件中的 URL 直接当 Webhook 目标，不跟随未验证重定向。
-- Webhook、邮箱授权码、会话 Secret 不进入 API 响应、错误栈、版本库、截图与测试报告；只显示是否配置。
+- App Secret、邮箱授权码、会话 Secret 不进入 API 响应、错误栈、版本库、截图与测试报告；只显示是否配置。
 - 邮件 HTML 清理和 CSP 同时实施，默认移除外部资源与跟踪像素；禁用脚本、危险 URL、表单和自动下载。
 - 页面无鉴权时不得外网开放；公网部署需 HTTPS。仅在可信局域网运行也不能省略私人内容鉴权。
 - 首版不调用模型，不隐式向模型服务传输邮件。后续启用摘要必须再次说明正文将发送给谁。
@@ -194,10 +194,34 @@ Feed 不是完整上传日志，停机后无法证明全量覆盖时记录 `cove
 | ADR-03 | v0.1 无 AI、无字幕下载 | v0.3 获得明确预算与内容外发授权 |
 | ADR-04 | Feed 轮询优先 | 延迟确有影响且能维护回调、续订与补查 |
 | ADR-05 | 专用邮箱 IMAP 只读 | 实际邮箱不支持所需授权，再评估 OAuth 或邮件转入 |
-| ADR-06 | 群机器人单向推送 | 用户明确需要私聊/交互，修订权限与消息实现 |
+| ADR-06 | 用户2026-10-16确认独立应用机器人单向私聊 | 需要群推送、多人或会话交互时另行评估权限 |
+
+## 13. 当前实现与运维
+
+- `server/store.ts`：SQLite schema v1、事务、队列与租约、重试、配额及清理。`server/engine.ts`：采集、游标、规则版本与投递编排。`server/adapters.ts`：RSS、只读 IMAP 与飞书。
+- `server/main.ts` 与 `server/worker.ts` 可分进程运行；开发演示通过 `EMBED_WORKER=1` 合并。独立 Worker 的全局租约确保同数据目录同一时刻只有一个扫描循环，单循环最多处理2个读取任务、5次顺序发送。
+- `web/` 是 Vue 管理工作台；不使用 `v-html` 渲染私人正文，不从网页保存或读回 Secret。
+- 账户标识由 IMAP host/user/folder 计算指纹。修改账户或文件夹需新数据目录，避免复用旧 UID；改授权码不改变身份。暂停/恢复邮件规则会取消旧 mailbox 租约，防止旧扫描覆盖补抓游标。
+- 已有 schema 高于当前程序时拒绝启动；v1 是首个实现，不存在旧业务数据的升级脚本。未来 schema 变更必须新增真实迁移测试，不能直接修改已有数据假装兼容。
+
+### 本地与生产
+
+真实凭证通过 `npm run setup` 创建的 `.env` 提供，默认关闭 IMAP 与飞书；`npm start` 服务8787，另终端 `npm run worker`。开发真实来源时 Origin 改为 localhost:5183 并启用嵌入 Worker。`npm run demo` 强制隔离 `data-demo/`、关闭真实来源，不受正式 `.env` 中 DATA_DIR/凭证开关影响。
+
+内置会话有8小时有效期，HttpOnly/SameSite=Strict，写接口检查 Origin 与 CSRF。公网部署使用 HTTPS 和 `COOKIE_SECURE=1`，反向代理须保留请求来源安全边界。不要直接对公网开放演示密码、Vite 开发端口或8787。
+
+Docker Compose 已提供双入口与共享卷配置，但本轮未运行容器验收。部署前先在目标机器验证 Docker 构建与三个来源的网络可达性；不承诺国内/海外某个区域必然可达。
+
+### 备份恢复
+
+先完成 `npm run build`。本地 `npm run backup -- backups/manual.sqlite` 使用 SQLite 在线备份 API，包含 WAL 中已提交事务，备份文件权限600。恢复前停止两个进程，再 `npm run restore -- backups/manual.sqlite --confirm-stopped`。恢复使用维护锁、完整性检查和 schema 检查；原数据另外做一致性备份，待发/发送中/待重试/未知记录统一转 `unknown / RESTORED_NEEDS_REVIEW`。
+
+Docker 卷内备份示例：`docker compose exec worker node dist/scripts/backup.js /app/data/manual.sqlite`。停止服务后可用 `docker compose run --rm --no-deps worker node dist/scripts/restore.js /app/data/manual.sqlite --confirm-stopped` 在同一卷恢复；确认无残留进程后再启动。以上容器命令尚待目标环境实测。
+
+备份含邮件正文，离机保存应加密；删除当前记录不会删除旧备份或完成取证级磁盘擦除。备份保留期由部署者负责，不能上传公开仓库。
 | ADR-07 | 允许 unknown，不承诺 exactly-once | 平台提供可验证幂等键或投递回查时再增强 |
 
-## 13. 后续 Sift 集成约束
+## 14. 后续 Sift 集成约束
 
 v0.3 才建立摘要适配边界，不在首版提前写空壳框架。摘要仅增强条目，不控制来源、收件人或邮箱操作。
 

@@ -1,0 +1,27 @@
+services:
+  web:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      EMBED_WORKER: 0
+    ports: ['127.0.0.1:8787:8787']
+    volumes: ['state:/app/data']
+  worker:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    command: ['npm', 'run', 'worker']
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      EMBED_WORKER: 0
+    volumes: ['state:/app/data']
+volumes:
+  state:

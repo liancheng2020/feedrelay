@@ -1,0 +1,52 @@
+{
+  "name": "feedrelay",
+  "version": "0.1.0-rc.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"tsx watch server/main.ts\" \"vite --host 127.0.0.1\"",
+    "demo": "cross-env FEEDRELAY_DEMO=1 NODE_ENV=development APP_ORIGIN=http://localhost:5183 DATA_DIR=data-demo COOKIE_SECURE=0 IMAP_ENABLED=0 FEISHU_ENABLED=0 npm run dev",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.server.json && vue-tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json",
+    "start": "node dist/server/main.js",
+    "worker": "node dist/server/worker.js",
+    "setup": "node scripts/setup.mjs",
+    "backup": "node dist/scripts/backup.js",
+    "restore": "node dist/scripts/restore.js",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@koa/bodyparser": "6.1.0",
+    "@koa/router": "15.7.0",
+    "@lucide/vue": "1.57.0",
+    "dotenv": "18.0.8",
+    "imapflow": "2.4.3",
+    "koa": "3.2.1",
+    "koa-session": "7.0.2",
+    "koa-static": "5.0.0",
+    "mailparser": "3.9.39",
+    "rss-parser": "3.13.0",
+    "sanitize-html": "2.18.1",
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/koa": "3.0.3",
+    "@types/koa-static": "4.0.4",
+    "@types/mailparser": "3.9.0",
+    "@types/node": "24.19.2",
+    "@types/sanitize-html": "2.16.2",
+    "@vitejs/plugin-vue": "6.0.10",
+    "concurrently": "10.0.6",
+    "cross-env": "10.1.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vue-tsc": "3.3.13"
+  }
+}
