@@ -25,3 +25,32 @@ export function migrateV2(db: DatabaseSync) {
     throw error;
   }
 }
+
+export function migrateV3(db: DatabaseSync) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (Number(db.prepare('PRAGMA user_version').get()!.user_version) < 3)
+      db.exec(`
+      ALTER TABLE sources ADD COLUMN summary_mode TEXT NOT NULL DEFAULT 'off';
+      ALTER TABLE sources ADD COLUMN summary_notify INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sources ADD COLUMN summary_consent TEXT NOT NULL DEFAULT '';
+      ALTER TABLE sources ADD COLUMN summary_since INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE summaries (
+        id TEXT PRIMARY KEY, cache_key TEXT UNIQUE NOT NULL, item_id TEXT NOT NULL REFERENCES items(id),
+        source_id TEXT NOT NULL REFERENCES sources(id), generation INTEGER NOT NULL, stamp TEXT NOT NULL,
+        input TEXT NOT NULL, scope TEXT NOT NULL, origin TEXT NOT NULL, notify INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued', error TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '',
+        token TEXT NOT NULL DEFAULT '', lease INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, finished INTEGER,
+        output_item TEXT NOT NULL DEFAULT '');
+      CREATE INDEX summaries_item ON summaries(item_id);
+      CREATE TABLE model_calls (
+        id TEXT PRIMARY KEY, summary_id TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL,
+        reserved_micro INTEGER NOT NULL, input_tokens INTEGER, output_tokens INTEGER, actual_micro INTEGER);
+      PRAGMA user_version=3;
+    `);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { copyFile, readFile, mkdir, rename, unlink, open, chmod, access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { migrateV2 } from '../server/migrations.js';
+import { migrateV2, migrateV3 } from '../server/migrations.js';
 
 const source = process.argv[2];
 if (!source || !process.argv.includes('--confirm-stopped'))
@@ -32,10 +32,17 @@ try {
   try {
     if (
       db.prepare('PRAGMA integrity_check').get()?.integrity_check !== 'ok' ||
-      ![1, 2].includes(Number(db.prepare('PRAGMA user_version').get()?.user_version))
+      ![1, 2, 3].includes(Number(db.prepare('PRAGMA user_version').get()?.user_version))
     )
       throw new Error('INVALID_BACKUP');
     migrateV2(db);
+    migrateV3(db);
+    db.exec(
+      "UPDATE deliveries SET snapshot='',status=CASE WHEN status IN ('pending','retry_wait') THEN 'cancelled' ELSE status END,error='SUMMARY_RESTORED_DISABLED' WHERE item_id IN (SELECT output_item FROM summaries); UPDATE items SET text='',expired=1 WHERE id IN (SELECT output_item FROM summaries); UPDATE summaries SET input='',result='';",
+    );
+    db.exec(
+      "UPDATE summaries SET status='unknown',error='RESTORED_NEEDS_REVIEW',token='',lease=0 WHERE status IN ('queued','running'); UPDATE model_calls SET status='unknown' WHERE status='running'; UPDATE sources SET summary_mode='off',summary_notify=0,summary_consent=''; UPDATE meta SET value=json_set(value,'$.enabled',json('false')) WHERE key='summary_policy';",
+    );
     db.exec(
       `BEGIN IMMEDIATE; UPDATE deliveries SET status='unknown',error='RESTORED_NEEDS_REVIEW',token='',lease=0 WHERE status IN ('pending','sending','retry_wait','unknown','digest_wait'); DELETE FROM locks; UPDATE jobs SET status='retry_wait',token='',lease=0 WHERE status='running'; COMMIT; PRAGMA wal_checkpoint(TRUNCATE);`,
     );

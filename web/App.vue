@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import TransferDialog from './TransferDialog.vue';
+import SummarySettings, { type SummaryConfig } from './SummarySettings.vue';
+import ItemSummary, { type SummaryView } from './ItemSummary.vue';
 import {
   Rss,
   CirclePlay as Youtube,
@@ -36,6 +38,8 @@ interface Source {
   subject: string;
   feed_url: string;
   delivery_mode: string;
+  summary_mode: string;
+  summary_notify: number;
   enabled: number;
   notify: number;
   initialized: number;
@@ -61,6 +65,8 @@ interface Item {
   resolution?: string;
 }
 interface Detail extends Item {
+  summaries: SummaryView[];
+  summaryAllowed: boolean;
   delivery: {
     id: string;
     status: string;
@@ -136,6 +142,7 @@ interface Digest {
 }
 const digests = ref<Digest[]>([]),
   transfer = ref('');
+const summaryConfig = ref<SummaryConfig | null>(null);
 const activation = ref<Source | null>(null),
   notify = ref(false),
   consent = ref(false),
@@ -167,6 +174,10 @@ const labels: Record<string, string> = {
   batched: '已纳入日报',
 };
 const errors: Record<string, string> = {
+  SUMMARY_NOT_ENABLED: '请先配置 Sift，再确认启用摘要预算。',
+  SUMMARY_SOURCE_NOT_AUTHORIZED: '请在订阅源单独授权此来源的摘要外发。',
+  INVALID_SUMMARY_POLICY: '请检查摘要开关、累计请求及费用预算。',
+  SUMMARY_CONTENT_TOO_LONG: '正文过长，本版最多处理8000个UTF-16码元，不会静默截断。',
   INVALID_FEED_URL: '请输入有效的公开 RSS 地址。',
   PUBLIC_HTTPS_FEED_REQUIRED: '仅支持不含账号、查询参数或片段的公开 HTTPS Feed。',
   RSS_PRIVATE_ADDRESS: 'RSS 地址解析到私有或特殊网络，已阻止连接。',
@@ -312,6 +323,7 @@ async function load() {
   sources.value = await api<Source[]>('/sources');
   jobs.value = await api<Job[]>('/jobs');
   digests.value = await api<Digest[]>('/digests');
+  summaryConfig.value = await api<SummaryConfig>('/summaries/settings');
   const result = await api<{ items: Item[]; total: number }>(
     `/items?page=${page.value}&source=${encodeURIComponent(sourceFilter.value)}&status=${statusFilter.value}`,
   );
@@ -431,6 +443,35 @@ async function inspectPart(id: string) {
   await act(async () => {
     detail.value = await api<Detail>(`/items/${id}`);
   });
+}
+function changeSummary(s: Source, event: Event, push = false) {
+  const target = event.target as HTMLSelectElement | HTMLInputElement;
+  const mode = push ? s.summary_mode : target.value;
+  const notify = push ? (target as HTMLInputElement).checked : !!s.summary_notify;
+  const recipient = overview.value?.connections.recipient || '未配置';
+  if (push) (target as HTMLInputElement).checked = !!s.summary_notify;
+  else target.value = s.summary_mode;
+  confirmation.value = {
+    title: mode === 'off' ? '关闭此来源摘要？' : '授权此来源摘要？',
+    text:
+      mode === 'off'
+        ? '将取消排队摘要、清理结果及未发AI补充。已发出的外部请求或消息无法撤回。'
+        : `${demo.value ? '本环境为模拟，不连接外部服务。' : `已采集${s.type === 'youtube' ? '视频简介（不是字幕或全文）' : s.type === 'rss' ? 'Feed文本（不代表网页全文）' : '邮件正文（不含附件）'}将发送到 DeepSeek。`} ${mode === 'auto' ? '只自动处理授权后新发现且已排队提醒的条目，不处理历史收件箱。' : '仅在你确认具体条目后处理。'} ${notify ? `另行即时私聊发送AI补充，独立于原即时/日报，不会重发原通知。接收人：${recipient}。` : '摘要仅在详情页查看，不向飞书追加消息。'} 失败、修复和重试均占用累计预算；引用校验不保证语义正确。`,
+    run: async () => {
+      await api(`/sources/${s.id}/summary`, 'POST', { mode, notify, confirmed: true });
+    },
+  };
+}
+function generateSummary(retry: boolean) {
+  const id = detail.value?.id;
+  if (!id) return;
+  confirmation.value = {
+    title: retry ? '重新处理摘要？' : '生成当前内容摘要？',
+    text: `${demo.value ? '本次为模拟处理。' : '当前已采集文本将发送至 DeepSeek。'} 相同有效内容复用缓存；失败或中断后的重做可能再次计费，所有请求受累计预算限制。原始提醒不会重发。`,
+    run: async () => {
+      await api(`/items/${id}/summary`, 'POST', { confirmed: true, retry });
+    },
+  };
 }
 async function imported() {
   transfer.value = '';
@@ -791,6 +832,28 @@ onUnmounted(() => {
                   <option value="digest">每日日报</option>
                 </select></label
               >
+              <div class="summary-source-controls">
+                <label class="mode-picker"
+                  >AI摘要<select
+                    aria-label="AI摘要"
+                    :value="s.summary_mode"
+                    :disabled="busy || (!summaryConfig?.enabled && s.summary_mode === 'off')"
+                    @change="changeSummary(s, $event)"
+                  >
+                    <option value="off">关闭</option>
+                    <option value="manual">按需</option>
+                    <option value="auto">自动 · 仅后续更新</option>
+                  </select></label
+                >
+                <label v-if="s.summary_mode !== 'off'" class="check"
+                  ><input
+                    type="checkbox"
+                    :checked="!!s.summary_notify"
+                    :disabled="busy"
+                    @change="changeSummary(s, $event, true)"
+                  />私聊追加AI补充</label
+                >
+              </div>
               <div class="source-times">
                 <span>最近成功 {{ time(s.last_success) }}</span
                 ><span v-if="s.enabled">{{ s.initialized ? '基线已建立' : '等待首次基线' }}</span
@@ -877,6 +940,18 @@ onUnmounted(() => {
             }}
           </p>
         </section>
+        <SummarySettings
+          v-if="summaryConfig"
+          :value="summaryConfig"
+          :busy="busy"
+          :demo="demo"
+          @save="
+            (value) =>
+              act(async () => {
+                await api('/summaries/settings', 'PUT', { ...value, confirmed: true });
+              }, '摘要预算已保存；请在订阅源单独授权。')
+          "
+        />
         <form
           class="settings-band settings-form"
           @submit.prevent="
@@ -964,6 +1039,13 @@ onUnmounted(() => {
           此记录属于日报分片。核查与重发作用于整个分片，不会单独发送某一成员。
         </p>
         <p class="body-text">{{ detail.expired ? '正文已过保留期。' : detail.text }}</p>
+        <ItemSummary
+          v-if="['youtube', 'email', 'rss'].includes(detail.kind) && !detail.expired"
+          :rows="detail.summaries"
+          :allowed="detail.summaryAllowed"
+          :busy="busy"
+          @generate="generateSummary"
+        />
         <a
           v-if="detail.url"
           :href="detail.url"

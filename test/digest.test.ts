@@ -216,6 +216,9 @@ test('v2 backup restore keeps membership and quarantines pending parts', (t) => 
   const f = setup(t);
   f.put('a');
   freezeDigest(f.store, 'demo');
+  f.store.db.exec(
+    `DROP TABLE summaries; DROP TABLE model_calls; ALTER TABLE sources DROP COLUMN summary_mode; ALTER TABLE sources DROP COLUMN summary_notify; ALTER TABLE sources DROP COLUMN summary_consent; ALTER TABLE sources DROP COLUMN summary_since; PRAGMA user_version=2;`,
+  );
   const path = join(f.dir, 'backup.sqlite');
   const back = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/backup.ts', path], {
     env: { ...process.env, DATA_DIR: f.dir },
@@ -232,6 +235,8 @@ test('v2 backup restore keeps membership and quarantines pending parts', (t) => 
   const restored = new Store(restoredDir, 'demo', f.now);
   t.after(() => restored.close());
   const batch = listDigests(restored)[0];
+  assert.equal(restored.get('PRAGMA user_version')!.user_version, 3);
+  assert.equal(restored.sources()[0].summary_mode, 'off');
   assert.equal(batch.members, 1);
   assert.equal(batch.parts[0].status, 'unknown');
   assert.equal(restored.claimDelivery('demo'), undefined);

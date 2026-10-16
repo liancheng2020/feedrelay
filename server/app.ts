@@ -204,6 +204,23 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   router.get('/api/digests', (ctx) => {
     ctx.body = listDigests(store);
   });
+  router.get('/api/summaries/settings', (ctx) => {
+    ctx.body = engine.summaries.describe();
+  });
+  router.put('/api/summaries/settings', (ctx) => {
+    ctx.body = engine.summaries.configure(ctx.request.body);
+  });
+  router.post('/api/sources/:id/summary', (ctx) => {
+    const b = ctx.request.body as { mode?: unknown; notify?: unknown; confirmed?: unknown };
+    ctx.body = engine.summaries.authorize(String(ctx.params.id), b.mode, b.notify, b.confirmed);
+  });
+  router.post('/api/items/:id/summary', (ctx) => {
+    const b = ctx.request.body as { confirmed?: boolean; retry?: boolean };
+    if (b.confirmed !== true || (b.retry !== undefined && typeof b.retry !== 'boolean'))
+      throw new AppError('SUMMARY_CONFIRMATION_REQUIRED');
+    ctx.status = 202;
+    ctx.body = { id: engine.summaries.enqueue(String(ctx.params.id), 'manual', b.retry === true) };
+  });
   router.post('/api/sources/:id/toggle', (ctx) => {
     const input = ctx.request.body as {
       enabled?: boolean;
@@ -255,7 +272,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       source = String(ctx.query.source || '');
     const joins =
       'items i LEFT JOIN deliveries d ON d.item_id=i.id LEFT JOIN deliveries p ON p.id=d.part_id';
-    const where = `WHERE i.kind<>'digest' AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
+    const where = `WHERE i.kind NOT IN ('digest','summary') AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
     const params = [status, status, source, source];
     ctx.body = {
       page,
@@ -274,6 +291,17 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     if (d?.part_id) d = store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.part_id);
     ctx.body = {
       ...item,
+      summaries: engine.summaries.list(item.id),
+      summaryAllowed:
+        engine.summaries.describe().enabled &&
+        engine.summaries.describe().stamp === engine.summaries.stamp &&
+        !item.expired &&
+        ['youtube', 'rss', 'email'].includes(item.kind) &&
+        store.all<{ id: string }>(
+          "SELECT s.id FROM sources s JOIN source_items si ON si.source_id=s.id WHERE si.item_id=? AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off' AND s.summary_consent=?",
+          item.id,
+          engine.summaries.stamp,
+        ).length > 0,
       delivery: d
         ? {
             id: d.id,

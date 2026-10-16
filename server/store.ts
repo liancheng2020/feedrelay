@@ -3,13 +3,17 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppError, defaults, dayKey, preview, type Settings } from './config.js';
-import { migrateV2 } from './migrations.js';
+import { migrateV2, migrateV3 } from './migrations.js';
 
 export interface Source {
   id: string;
   type: 'youtube' | 'email' | 'rss';
   feed_url: string;
   delivery_mode: 'immediate' | 'digest';
+  summary_mode: 'off' | 'manual' | 'auto';
+  summary_notify: number;
+  summary_consent: string;
+  summary_since: number;
   name: string;
   channel: string;
   sender: string;
@@ -31,7 +35,7 @@ export interface Source {
 export interface Item {
   id: string;
   key: string;
-  kind: 'youtube' | 'email' | 'rss' | 'digest';
+  kind: 'youtube' | 'email' | 'rss' | 'digest' | 'summary';
   title: string;
   author: string;
   url: string;
@@ -105,7 +109,7 @@ export class Store {
     this.db = new DatabaseSync(join(dir, 'feedrelay.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = this.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
-    if (version > 2) {
+    if (version > 3) {
       this.db.close();
       throw new AppError('DATABASE_NEWER_THAN_APP');
     }
@@ -142,6 +146,7 @@ export class Store {
     }
     try {
       migrateV2(this.db);
+      migrateV3(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -286,6 +291,19 @@ export class Store {
     return this.source(id);
   }
   private cancelSourceJobs(s: Source) {
+    this.run(
+      "UPDATE sources SET summary_mode='off',summary_notify=0,summary_consent='' WHERE id=?",
+      s.id,
+    );
+    for (const row of this.all<{ output_item: string }>(
+      'SELECT output_item FROM summaries WHERE source_id=?',
+      s.id,
+    ))
+      if (row.output_item) this.expireItem(row.output_item);
+    this.run(
+      "UPDATE summaries SET status='cancelled',error='SUMMARY_CONSENT_REVOKED',input='',result='',token='',lease=0 WHERE source_id=? AND status<>'expired'",
+      s.id,
+    );
     this.run(
       `UPDATE jobs SET status='cancelled',token='',lease=0 WHERE (resource=? OR (?='email' AND kind='mailbox')) AND status IN ('pending','running','retry_wait')`,
       s.id,
@@ -653,6 +671,16 @@ export class Store {
     this.run(`DELETE FROM locks WHERE name='worker' AND token=?`, token);
   }
   private expireItem(id: string, eraseMetadata = false) {
+    for (const summary of this.all<{ id: string; output_item: string }>(
+      'SELECT id,output_item FROM summaries WHERE item_id=?',
+      id,
+    )) {
+      this.run(
+        "UPDATE summaries SET input='',result='',status='expired',error='CONTENT_EXPIRED',token='',lease=0 WHERE id=?",
+        summary.id,
+      );
+      if (summary.output_item) this.expireItem(summary.output_item, eraseMetadata);
+    }
     const parent = this.get<{ item_id: string }>(
       'SELECT p.item_id FROM deliveries d JOIN deliveries p ON p.id=d.part_id WHERE d.item_id=?',
       id,
@@ -710,6 +738,10 @@ export class Store {
         this.now() - 90 * DAY,
       );
       this.run(
+        "DELETE FROM summaries WHERE created<? AND status<>'running'",
+        this.now() - 90 * DAY,
+      );
+      this.run(
         `DELETE FROM items WHERE discovered<? AND NOT EXISTS (SELECT 1 FROM source_items WHERE item_id=items.id) AND NOT EXISTS (SELECT 1 FROM deliveries WHERE item_id=items.id)`,
         this.now() - 90 * DAY,
       );
@@ -724,7 +756,9 @@ export class Store {
     const day = dayKey(this.now(), this.settings().timezone);
     return {
       sources: this.get<Row>('SELECT count(*) n FROM sources WHERE deleted=0')!.n,
-      items: this.get<Row>("SELECT count(*) n FROM items WHERE expired=0 AND kind<>'digest'")!.n,
+      items: this.get<Row>(
+        "SELECT count(*) n FROM items WHERE expired=0 AND kind NOT IN ('digest','summary')",
+      )!.n,
       pending: this.get<Row>(
         `SELECT count(*) n FROM deliveries WHERE status IN ('pending','retry_wait','digest_wait')`,
       )!.n,

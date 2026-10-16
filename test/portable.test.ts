@@ -97,19 +97,31 @@ test('v1 schema migrates without losing sources, delivery or settings', (t) => {
   const item = f.store.put(incoming('legacy', f.now()), [s], true, 'demo');
   // Recreate the exact v1 table shape from the candidate's default-valued columns.
   f.store.db.exec(
+    `DROP TABLE summaries; DROP TABLE model_calls; ALTER TABLE sources DROP COLUMN summary_mode; ALTER TABLE sources DROP COLUMN summary_notify; ALTER TABLE sources DROP COLUMN summary_consent; ALTER TABLE sources DROP COLUMN summary_since;`,
+  );
+  f.store.db.exec(
     `BEGIN; DROP INDEX source_identity; ALTER TABLE sources DROP COLUMN feed_url; ALTER TABLE sources DROP COLUMN delivery_mode; CREATE UNIQUE INDEX source_identity ON sources(type,channel,sender,subject) WHERE deleted=0; DROP INDEX digest_members; ALTER TABLE deliveries DROP COLUMN mode; ALTER TABLE deliveries DROP COLUMN batch_id; ALTER TABLE deliveries DROP COLUMN part_id; DROP TABLE digest_batches; UPDATE meta SET value='{"timezone":"Asia/Shanghai","youtubeMinutes":15,"mailMinutes":5,"dailyLimit":50,"mailDays":7,"itemDays":30}' WHERE key='settings'; PRAGMA user_version=1; COMMIT;`,
   );
   const backup = join(f.dir, 'v1.sqlite');
-  const saved = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/backup.ts', backup], { env: { ...process.env, DATA_DIR: f.dir }, encoding: 'utf8' });
+  const saved = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/backup.ts', backup], {
+    env: { ...process.env, DATA_DIR: f.dir },
+    encoding: 'utf8',
+  });
   assert.equal(saved.status, 0, saved.stderr);
   const destination = join(f.dir, 'v1-restored');
-  const restored = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/restore.ts', backup, '--confirm-stopped'], { env: { ...process.env, DATA_DIR: destination }, encoding: 'utf8' });
+  const restored = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', 'scripts/restore.ts', backup, '--confirm-stopped'],
+    { env: { ...process.env, DATA_DIR: destination }, encoding: 'utf8' },
+  );
   assert.equal(restored.status, 0, restored.stderr);
-  const fromBackup = new Store(destination, 'demo', f.now); t.after(() => fromBackup.close());
-  assert.equal(fromBackup.get('PRAGMA user_version')!.user_version, 2); assert.equal(fromBackup.get('SELECT status FROM deliveries')!.status, 'unknown');
+  const fromBackup = new Store(destination, 'demo', f.now);
+  t.after(() => fromBackup.close());
+  assert.equal(fromBackup.get('PRAGMA user_version')!.user_version, 3);
+  assert.equal(fromBackup.get('SELECT status FROM deliveries')!.status, 'unknown');
   const upgraded = new Store(f.dir, 'demo', f.now);
   t.after(() => upgraded.close());
-  assert.equal(upgraded.get('PRAGMA user_version')!.user_version, 2);
+  assert.equal(upgraded.get('PRAGMA user_version')!.user_version, 3);
   assert.equal(upgraded.source(s.id).channel, channel);
   assert.equal(upgraded.source(s.id).delivery_mode, 'immediate');
   assert.equal(

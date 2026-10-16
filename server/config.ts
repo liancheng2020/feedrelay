@@ -64,7 +64,26 @@ export function readConfig(env = process.env) {
       secret: env.FEISHU_APP_SECRET || '',
       openId: env.FEISHU_OPEN_ID || '',
     },
+    sift: {
+      enabled: env.SIFT_ENABLED === '1',
+      dir: env.SIFT_DIR ? resolve(env.SIFT_DIR) : '',
+      apiKey: env.SIFT_API_KEY || '',
+      model: env.SIFT_MODEL || 'deepseek-flash',
+      inputPrice: Number(env.SIFT_INPUT_CNY_PER_MILLION || 0),
+      outputPrice: Number(env.SIFT_OUTPUT_CNY_PER_MILLION || 0),
+    },
   };
+  if (
+    !demo &&
+    config.sift.enabled &&
+    (!config.sift.dir ||
+      !config.sift.apiKey ||
+      !/^[a-zA-Z0-9._-]{1,80}$/.test(config.sift.model) ||
+      ![config.sift.inputPrice, config.sift.outputPrice].every(
+        (n) => Number.isFinite(n) && n > 0 && n <= 10000,
+      ))
+  )
+    throw new AppError('INVALID_SIFT_CONFIG');
   if (!demo && (!verifyHash(config.passwordHash) || config.sessionSecret.length < 32))
     throw new AppError('RUN_NPM_SETUP_FIRST');
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)

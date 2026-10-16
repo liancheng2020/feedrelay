@@ -13,6 +13,8 @@ import {
 } from './adapters.js';
 import { fetchRss } from './rss.js';
 import { freezeDigest } from './digest.js';
+import { SummaryService } from './summary.js';
+import { createSiftAdapter, demoModelFetch } from './sift.js';
 
 export interface Adapters {
   feed: typeof fetchFeed;
@@ -27,6 +29,7 @@ export class Engine {
   private activeToken = '';
   readonly destination: string;
   adapters: Adapters;
+  summaries: SummaryService;
   constructor(
     public store: Store,
     public config: Config,
@@ -43,6 +46,12 @@ export class Engine {
     if (!config.demo && config.imap.enabled)
       store.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'mailbox_identity', identity);
     this.destination = destinationRef(config);
+    this.summaries = new SummaryService(
+      store,
+      createSiftAdapter(config),
+      this.destination,
+      config.demo ? demoModelFetch : fetch,
+    );
     this.adapters = {
       feed: fetchFeed,
       rss: fetchRss,
@@ -79,6 +88,7 @@ export class Engine {
         if (job) await this.execute(job);
       }
       if (!this.stopped) freezeDigest(this.store, this.destination);
+      this.summaries.reconcile();
       if ((this.config.demo || this.config.feishu.enabled) && !this.stopped)
         for (let n = 0; n < 5 && !this.stopped; n++) {
           const d = this.store.claimDelivery(this.destination);
@@ -89,6 +99,10 @@ export class Engine {
             this.store.finishDelivery(d, { status: 'unknown', code: 'SEND_UNCONFIRMED' });
           }
         }
+      if (!this.stopped) {
+        this.summaries.schedule();
+        await this.summaries.cycle(this.destination);
+      }
     } finally {
       clearInterval(heartbeat);
       this.store.releaseWorker(this.owner);
