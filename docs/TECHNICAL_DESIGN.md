@@ -4,6 +4,8 @@
 
 ## 1. 架构与技术选择
 
+FR-21补充：微信与飞书由`PUSH_CHANNEL`选择一个活动通道，默认飞书；不加入OpenClaw运行时。`server/weixin.ts`实现公开iLink HTTP JSON接口的受限子集：QR配对、绑定人消息长轮询、纯文本发送。新增QR仅使用本地qrcode库生成PNG，不调用第三方二维码服务。需求和边界见PRODUCT中的FR-21，验收见QUALITY_AND_RISKS。
+
 ```text
 管理页面 -> 鉴权 API -> SQLite 持久化存储
                          ^
@@ -61,6 +63,8 @@ Worker: 到期调度 -> 来源适配器 -> 规范化条目 -> 待发送记录 ->
 重要索引：待执行任务的状态和 available_at、待发送状态和 available_at、来源检查时间、内容 canonical_key、账户/文件夹游标。仅在有必要的查询上建索引。
 
 ### 3.1 时间与内容标识
+
+FR-21凭证例外：微信扫码后Token、绑定人ID、上下文与游标必须持久化，存入meta的`weixin_account`；扫码中的短期状态存入`weixin_pair`。两者使用`SESSION_SECRET`派生的AES-256-GCM密钥加密，不导出到来源配置；备份恢复后删除两项，必须重新扫码。不要修改密钥来尝试修复网络问题。加密不保护已经被攻陷的本机进程；备份仍需私密保管。
 
 - 数据库保存 UTC 时间，展示、每日发送限额与后续日报按配置时区计算。
 - 区分 `published_at`、`received_at` 和 `discovered_at`，不能用一个时间替代所有语义。

@@ -103,6 +103,8 @@ test('v1 schema migrates without losing sources, delivery or settings', (t) => {
     `BEGIN; DROP INDEX source_identity; ALTER TABLE sources DROP COLUMN feed_url; ALTER TABLE sources DROP COLUMN delivery_mode; CREATE UNIQUE INDEX source_identity ON sources(type,channel,sender,subject) WHERE deleted=0; DROP INDEX digest_members; ALTER TABLE deliveries DROP COLUMN mode; ALTER TABLE deliveries DROP COLUMN batch_id; ALTER TABLE deliveries DROP COLUMN part_id; DROP TABLE digest_batches; UPDATE meta SET value='{"timezone":"Asia/Shanghai","youtubeMinutes":15,"mailMinutes":5,"dailyLimit":50,"mailDays":7,"itemDays":30}' WHERE key='settings'; PRAGMA user_version=1; COMMIT;`,
   );
   const backup = join(f.dir, 'v1.sqlite');
+  f.store.run("INSERT INTO meta VALUES ('weixin_account','synthetic-encrypted-state')");
+  f.store.run("INSERT INTO meta VALUES ('weixin_pair','synthetic-encrypted-pair')");
   const saved = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/backup.ts', backup], {
     env: { ...process.env, DATA_DIR: f.dir },
     encoding: 'utf8',
@@ -118,6 +120,10 @@ test('v1 schema migrates without losing sources, delivery or settings', (t) => {
   const fromBackup = new Store(destination, 'demo', f.now);
   t.after(() => fromBackup.close());
   assert.equal(fromBackup.get('PRAGMA user_version')!.user_version, 4);
+  assert.equal(
+    fromBackup.get("SELECT count(*) n FROM meta WHERE key IN ('weixin_account','weixin_pair')")!.n,
+    0,
+  );
   assert.equal(fromBackup.get('SELECT status FROM deliveries')!.status, 'unknown');
   const upgraded = new Store(f.dir, 'demo', f.now);
   t.after(() => upgraded.close());

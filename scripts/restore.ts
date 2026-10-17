@@ -38,6 +38,7 @@ try {
     migrateV2(db);
     migrateV3(db);
     migrateV4(db);
+    db.exec("DELETE FROM meta WHERE key IN ('weixin_account','weixin_pair')");
     db.exec(
       "UPDATE deliveries SET snapshot='',status=CASE WHEN status IN ('pending','retry_wait') THEN 'cancelled' ELSE status END,error='SUMMARY_RESTORED_DISABLED' WHERE item_id IN (SELECT output_item FROM summaries); UPDATE items SET text='',expired=1 WHERE id IN (SELECT output_item FROM summaries); UPDATE summaries SET input='',result='',material='';",
     );

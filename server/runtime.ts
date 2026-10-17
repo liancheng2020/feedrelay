@@ -28,6 +28,7 @@ export function processLock(dir: string, role: 'web' | 'worker') {
 }
 export function startLoop(engine: Engine) {
   const release = processLock(engine.config.dataDir, 'worker');
+  engine.weixin.start();
   let stopped = false,
     timer: ReturnType<typeof setTimeout>;
   const tick = async () => {

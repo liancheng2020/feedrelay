@@ -74,6 +74,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       !ctx.session?.authenticated
     )
       throw new AppError('UNAUTHORIZED', 401);
+    engine.syncDestination();
     await next();
   });
   app.use(
@@ -145,10 +146,15 @@ export function createApp(store: Store, config: Config, engine: Engine) {
         folder: config.imap.folder,
         recipient: config.demo
           ? '演示收件人（模拟）'
-          : config.feishu.openId
-            ? `${config.feishu.openId.slice(0, 6)}…${config.feishu.openId.slice(-4)}`
-            : '未配置',
+          : config.pushChannel === 'weixin'
+            ? engine.weixin.describe().recipient || '未绑定'
+            : config.feishu.openId
+              ? `${config.feishu.openId.slice(0, 6)}…${config.feishu.openId.slice(-4)}`
+              : '未配置',
         app: config.feishu.appId ? '已配置' : '未配置',
+        channel: config.pushChannel,
+        pushReady: engine.pushReady,
+        weixin: engine.weixin.describe(),
       },
     };
   });
@@ -247,6 +253,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     };
     if (input.notify && input.confirmed !== true)
       throw new AppError('DISCLOSURE_CONFIRMATION_REQUIRED');
+    if (input.notify && !engine.pushReady) throw new AppError('PUSH_NOT_READY');
     if (!['new_only', 'catch_up'].includes(input.mode || 'new_only'))
       throw new AppError('INVALID_RESUME_MODE');
     ctx.body = store.toggle(
@@ -351,8 +358,14 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     store.setSettings(validateSettings(ctx.request.body as Settings));
     ctx.body = store.settings();
   });
-  router.post('/api/settings/test-feishu', (ctx) => {
-    if (!config.demo && !config.feishu.enabled) throw new AppError('FEISHU_NOT_ENABLED', 503);
+  router.post(['/api/settings/test-feishu', '/api/settings/test-push'], (ctx) => {
+    if (ctx.path.endsWith('test-feishu') && config.pushChannel !== 'feishu')
+      throw new AppError('INVALID_PUSH_CHANNEL');
+    if (!engine.pushReady)
+      throw new AppError(
+        config.pushChannel === 'weixin' ? 'PUSH_NOT_READY' : 'FEISHU_NOT_ENABLED',
+        503,
+      );
     if ((ctx.request.body as { confirmed?: boolean }).confirmed !== true)
       throw new AppError('SEND_CONFIRMATION_REQUIRED');
     const recent = Number(
@@ -378,6 +391,40 @@ export function createApp(store: Store, config: Config, engine: Engine) {
         engine.destination,
       ),
     );
+  });
+  router.post('/api/weixin/pair', async (ctx) => {
+    const body = ctx.request.body as { confirmed?: boolean; replace?: boolean };
+    if (
+      body.confirmed !== true ||
+      (body.replace !== undefined && typeof body.replace !== 'boolean')
+    )
+      throw new AppError('WEIXIN_PAIR_CONFIRMATION_REQUIRED');
+    const recent = store.get<{ n: number }>(
+      "SELECT count(*) n FROM events WHERE action='weixin_pair_started' AND at>?",
+      store.now() - 60000,
+    )!.n;
+    if (recent >= 3) throw new AppError('WEIXIN_PAIR_RATE_LIMITED', 429);
+    ctx.body = await engine.weixin.begin(body.replace === true);
+  });
+  router.post('/api/weixin/pair/status', async (ctx) => {
+    const body = ctx.request.body as { id?: unknown; code?: unknown };
+    if (typeof body.id !== 'string' || (body.code !== undefined && typeof body.code !== 'string'))
+      throw new AppError('WEIXIN_INVALID_PAIR_CODE');
+    ctx.body = await engine.weixin.pollPair(body.id, body.code as string | undefined);
+    engine.syncDestination();
+  });
+  router.post('/api/weixin/pair/cancel', (ctx) => {
+    const body = ctx.request.body as { id?: unknown };
+    if (typeof body.id !== 'string') throw new AppError('WEIXIN_PAIR_EXPIRED');
+    engine.weixin.cancelPair(body.id);
+    ctx.body = { ok: true };
+  });
+  router.post('/api/weixin/disconnect', (ctx) => {
+    if ((ctx.request.body as { confirmed?: boolean }).confirmed !== true)
+      throw new AppError('WEIXIN_PAIR_CONFIRMATION_REQUIRED');
+    engine.weixin.disconnect();
+    engine.syncDestination();
+    ctx.body = { ok: true };
   });
   router.post('/api/demo/advance', (ctx) => {
     if (!config.demo) throw new AppError('NOT_FOUND', 404);

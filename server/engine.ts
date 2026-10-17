@@ -17,13 +17,14 @@ import { SummaryService } from './summary.js';
 import { createSiftAdapter, demoModelFetch } from './sift.js';
 import { createCaptionAdapter } from './captions.js';
 import { resolveChannel, resolveDemoChannel, youtubeTransport } from './youtube.js';
+import { Weixin } from './weixin.js';
 
 export interface Adapters {
   resolveChannel: (input: string) => Promise<string>;
   feed: typeof fetchFeed;
   rss: typeof fetchRss;
   mailbox: () => Promise<MailSession>;
-  send: (text: string, uuid: string) => Promise<SendResult>;
+  send: (text: string, uuid: string, destination?: string) => Promise<SendResult>;
 }
 export class Engine {
   private owner = randomUUID();
@@ -31,7 +32,7 @@ export class Engine {
   private stopped = false;
   private activeToken = '';
   private youtubeClient: ReturnType<typeof youtubeTransport>;
-  readonly destination: string;
+  readonly weixin: Weixin;
   adapters: Adapters;
   summaries: SummaryService;
   constructor(
@@ -49,7 +50,7 @@ export class Engine {
       throw new AppError('MAILBOX_IDENTITY_CHANGED_USE_NEW_DATA_DIR');
     if (!config.demo && config.imap.enabled)
       store.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'mailbox_identity', identity);
-    this.destination = destinationRef(config);
+    this.weixin = new Weixin(store, config);
     this.youtubeClient = youtubeTransport(config.youtubeProxy);
     this.summaries = new SummaryService(
       store,
@@ -65,13 +66,33 @@ export class Engine {
       feed: (channel, cache) => fetchFeed(channel, cache, this.youtubeClient.request),
       rss: fetchRss,
       mailbox: () => connectMailbox(config),
-      send: feishuSender(config),
+      send:
+        config.pushChannel === 'weixin' && !config.demo
+          ? (text, uuid, destination) => this.weixin.send(text, uuid, destination)
+          : feishuSender(config),
       ...overrides,
     };
+  }
+  get destination() {
+    return this.config.pushChannel === 'weixin' && !this.config.demo
+      ? this.weixin.destination
+      : destinationRef(this.config);
+  }
+  get pushReady() {
+    return (
+      this.config.demo ||
+      (this.config.pushChannel === 'weixin'
+        ? this.weixin.describe().ready
+        : this.config.feishu.enabled)
+    );
+  }
+  syncDestination() {
+    this.summaries.destination = this.destination;
   }
   async cycle() {
     if (this.busy || this.stopped || !this.store.leaseWorker(this.owner)) return;
     this.busy = true;
+    this.syncDestination();
     const heartbeat = setInterval(() => {
       if (!this.store.leaseWorker(this.owner)) {
         this.stopped = true;
@@ -98,12 +119,12 @@ export class Engine {
       }
       if (!this.stopped) freezeDigest(this.store, this.destination);
       this.summaries.reconcile();
-      if ((this.config.demo || this.config.feishu.enabled) && !this.stopped)
+      if (this.pushReady && !this.stopped)
         for (let n = 0; n < 5 && !this.stopped; n++) {
           const d = this.store.claimDelivery(this.destination);
           if (!d) break;
           try {
-            this.store.finishDelivery(d, await this.adapters.send(d.snapshot, d.id));
+            this.store.finishDelivery(d, await this.adapters.send(d.snapshot, d.id, d.destination));
           } catch {
             this.store.finishDelivery(d, { status: 'unknown', code: 'SEND_UNCONFIRMED' });
           }
@@ -120,6 +141,7 @@ export class Engine {
   }
   async stop() {
     this.stopped = true;
+    await this.weixin.stop();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 25));
     await this.youtubeClient.close();
   }

@@ -50,6 +50,7 @@ export function readConfig(env = process.env) {
       : env.SESSION_SECRET || '',
     cookieSecure: env.COOKIE_SECURE === '1',
     embedWorker: demo || env.EMBED_WORKER === '1',
+    pushChannel: (env.PUSH_CHANNEL || 'feishu') as 'feishu' | 'weixin',
     youtubeProxy: httpProxy(env.YOUTUBE_PROXY_URL || '', 'INVALID_YOUTUBE_PROXY'),
     imap: {
       enabled: env.IMAP_ENABLED === '1',
@@ -79,6 +80,8 @@ export function readConfig(env = process.env) {
       proxy: httpProxy(env.YOUTUBE_CAPTIONS_PROXY_URL || '', 'INVALID_YOUTUBE_CAPTIONS_PROXY'),
     },
   };
+  if (!['feishu', 'weixin'].includes(config.pushChannel))
+    throw new AppError('INVALID_PUSH_CHANNEL');
   if (!demo && config.captions.enabled && !config.captions.python)
     throw new AppError('INVALID_YOUTUBE_CAPTIONS_CONFIG');
   if (

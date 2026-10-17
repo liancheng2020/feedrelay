@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import WeixinConnection, { type WeixinStatus } from './WeixinConnection.vue';
 import TransferDialog from './TransferDialog.vue';
 import SummarySettings, { type SummaryConfig } from './SummarySettings.vue';
 import ItemSummary, { type SummaryView } from './ItemSummary.vue';
@@ -100,7 +101,15 @@ interface Overview {
   demo: boolean;
   stats: Record<string, number | string | null>;
   settings: Prefs;
-  connections: { imap: boolean; feishu: boolean; folder: string; recipient: string };
+  connections: {
+    imap: boolean;
+    feishu: boolean;
+    folder: string;
+    recipient: string;
+    channel: 'feishu' | 'weixin';
+    pushReady: boolean;
+    weixin: WeixinStatus;
+  };
 }
 const authenticated = ref(false),
   ready = ref(false),
@@ -144,6 +153,9 @@ interface Digest {
 const digests = ref<Digest[]>([]),
   transfer = ref('');
 const summaryConfig = ref<SummaryConfig | null>(null);
+const pushLabel = computed(() =>
+  overview.value?.connections.channel === 'weixin' ? '微信' : '飞书',
+);
 const activation = ref<Source | null>(null),
   notify = ref(false),
   consent = ref(false),
@@ -175,6 +187,25 @@ const labels: Record<string, string> = {
   batched: '已纳入日报',
 };
 const errors: Record<string, string> = {
+  PUSH_NOT_READY: '推送通道尚未就绪；微信需先扫码绑定并向机器人发送一条消息。',
+  WEIXIN_NOT_ENABLED: '当前未选择微信通道，请设置 PUSH_CHANNEL=weixin 后重启。',
+  WEIXIN_NETWORK_ERROR: '无法连接微信服务，请稍后重新生成二维码。',
+  WEIXIN_HTTP_ERROR: '微信接口暂时不可用，请稍后重试。',
+  WEIXIN_INVALID_RESPONSE: '微信接口返回内容不完整，未记录为成功。',
+  WEIXIN_UNTRUSTED_HOST: '微信返回了不受信任的服务地址，已停止连接。',
+  WEIXIN_PAIR_EXPIRED: '二维码或配对已过期，请取消后重新扫码。',
+  WEIXIN_PAIR_BUSY: '正在更新扫码状态，请稍候。',
+  WEIXIN_PAIR_RATE_LIMITED: '扫码请求过于频繁，请稍后再试。',
+  WEIXIN_INVALID_PAIR_CODE: '请填写手机微信显示的4至8位数字配对码。',
+  WEIXIN_BINDING_EXISTS: '微信提示已存在绑定，但没有返回新凭证。请检查微信授权后重新扫码。',
+  WEIXIN_LOCAL_STATE_INVALID: '本机微信绑定信息无法解密，请解除后重新扫码。',
+  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送上下文，请给机器人发一条消息，再重试失败记录。',
+  WEIXIN_SESSION_EXPIRED: '微信登录已过期，请重新扫码。',
+  WEIXIN_RATE_LIMITED: '微信接口限流，将按队列有限重试。',
+  WEIXIN_SEND_REJECTED: '微信明确拒绝此消息，未标记为发送成功。',
+  WEIXIN_SEND_UNCONFIRMED: '微信发送结果不确定，请先人工核查。',
+  WEIXIN_DESTINATION_CHANGED: '微信绑定目标已变化，旧记录不会自动转发。',
+  WEIXIN_MESSAGE_TOO_LONG: '消息超过微信通道当前4000字限制。',
   SUMMARY_NOT_ENABLED: '请先配置 Sift，再确认启用摘要预算。',
   SUMMARY_SOURCE_NOT_AUTHORIZED: '请在订阅源单独授权此来源的摘要外发。',
   INVALID_SUMMARY_POLICY: '请检查摘要开关、累计请求及费用预算。',
@@ -215,7 +246,7 @@ const errors: Record<string, string> = {
   YOUTUBE_NETWORK_ERROR:
     '服务端无法连接 YouTube，请检查服务器网络或配置 YOUTUBE_PROXY_URL；浏览器代理不会自动作用于服务端。',
   MAILBOX_EPOCH_CHANGED: '邮箱标识已变化，已暂停规则，请重新建立基线。',
-  SEND_UNCONFIRMED: '发送结果不确定，请在飞书人工核查。',
+  SEND_UNCONFIRMED: '发送结果不确定，请在接收端人工核查。',
   DEMO_ACCEPTED: '模拟发送成功',
   FEISHU_RATE_LIMIT: '飞书请求受限。',
   FEED_WINDOW_GAP: 'RSS 窗口可能存在漏抓，请到频道核对。',
@@ -491,7 +522,7 @@ function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'cont
                 : '仅在你确认具体条目后处理。',
               notify
                 ? `另行即时私聊发送AI补充，独立于原即时/日报，不会重发原通知。接收人：${recipient}。`
-                : '摘要仅在详情页查看，不向飞书追加消息。',
+                : '摘要仅在详情页查看，不追加私聊消息。',
               '切换正文范围使旧结果失效。失败、修复和重试均占用累计预算；引用校验不保证语义正确。',
             ]
               .filter(Boolean)
@@ -536,7 +567,7 @@ function resolve(action: 'retry' | 'acknowledge') {
     title: action === 'retry' ? '确认重新发送？' : '标记为已人工核查？',
     text:
       action === 'retry'
-        ? '若上次已送达，重发可能产生重复消息。请先在飞书核查，再决定是否发送。'
+        ? '若上次已送达，重发可能产生重复消息。请先在接收端核查，再决定是否发送。'
         : '此操作只记录你的核查结论，不代表平台返回了送达或已读凭证。',
     run: async () => {
       await api(`/deliveries/${d.id}/resolve`, 'POST', { action, confirmed: true });
@@ -551,14 +582,14 @@ async function confirm() {
     confirmation.value = null;
   }, '已提交。');
 }
-function testFeishu() {
+function testPush() {
   confirmation.value = {
-    title: '发送飞书连接测试？',
+    title: `发送${pushLabel.value}连接测试？`,
     text: demo.value
-      ? '当前为本地演示，只记录模拟结果，不会向飞书发送消息。'
+      ? '当前为本地演示，只记录模拟结果，不会向外发送消息。'
       : '将向配置的用户私聊发送一条不含私人内容的测试消息。',
     run: async () => {
-      await api('/settings/test-feishu', 'POST', { confirmed: true });
+      await api('/settings/test-push', 'POST', { confirmed: true });
     },
   };
 }
@@ -971,7 +1002,7 @@ onUnmounted(() => {
               demo ? '模拟连接' : overview?.connections.imap ? '已配置，待检查' : '未配置'
             }}</span>
           </div>
-          <div class="connection-row">
+          <div v-if="overview?.connections.channel !== 'weixin'" class="connection-row">
             <Send :size="21" />
             <div>
               <strong>飞书应用机器人</strong>
@@ -980,7 +1011,7 @@ onUnmounted(() => {
             <span class="badge" :class="overview?.connections.feishu ? 'sent' : 'cancelled'">{{
               demo ? '模拟连接' : overview?.connections.feishu ? '已配置，待检查' : '未配置'
             }}</span
-            ><button :disabled="busy || !overview?.connections.feishu" @click="testFeishu">
+            ><button :disabled="busy || !overview?.connections.feishu" @click="testPush">
               <Send :size="16" />发送测试
             </button>
           </div>
@@ -992,6 +1023,13 @@ onUnmounted(() => {
             }}
           </p>
         </section>
+        <WeixinConnection
+          v-if="overview?.connections.channel === 'weixin'"
+          :value="overview.connections.weixin"
+          :api="api"
+          @updated="act(load)"
+          @test="testPush"
+        />
         <SummarySettings
           v-if="summaryConfig"
           :value="summaryConfig"
@@ -1125,7 +1163,7 @@ onUnmounted(() => {
             <Check :size="17" />已核查
           </button>
         </div>
-        <p class="muted">“已接受”仅表示飞书接口成功接受消息，不代表已读。</p>
+        <p class="muted">“已接受”仅表示推送接口成功接受消息，不代表已读。</p>
       </section>
     </div>
     <div v-if="editor" class="overlay" @click.self="editor = false">
@@ -1229,10 +1267,12 @@ onUnmounted(() => {
               </option>
             </select></label
           ><label class="check-row"
-            ><input v-model="notify" type="checkbox" />同时启用飞书私聊推送</label
+            ><input v-model="notify" type="checkbox" />同时启用{{ pushLabel }}私聊推送</label
           ><label v-if="notify" class="check-row disclosure"
             ><input v-model="consent" type="checkbox" required /><span
-              >我确认将匹配内容的标题、发件地址及最多400字正文预览发送到配置的飞书用户私聊。</span
+              >我确认将匹配内容的标题、发件地址及最多400字正文预览发送到配置的{{
+                pushLabel
+              }}用户私聊。</span
             ></label
           >
           <p v-if="error" class="error" role="alert">{{ error }}</p>
