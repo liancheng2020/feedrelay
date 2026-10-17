@@ -198,14 +198,22 @@ const errors: Record<string, string> = {
   INVALID_ORIGIN: '访问地址与 APP_ORIGIN 不一致，请检查本地配置。',
   INVALID_CSRF: '会话已更新，请刷新页面。',
   SOURCE_ALREADY_EXISTS: '这个订阅源已经存在。',
-  INVALID_CHANNEL: '请填写 UC 开头的频道 ID，或标准 /channel/ 链接。',
-  CHANNEL_HANDLE_NOT_SUPPORTED: '暂不支持 @用户名，请使用频道 ID。',
+  INVALID_CHANNEL: '请填写 YouTube @频道链接、@用户名，或 UC 开头的频道 ID。',
+  CHANNEL_ID_REQUIRED: '配置导入仅接受已解析的 UC 频道 ID；@链接请从添加订阅源入口保存。',
+  CHANNEL_NOT_FOUND: '未找到该 YouTube 频道，请核对 @用户名。',
+  CHANNEL_RESOLUTION_FAILED: '未能确认频道 ID，未保存订阅；请稍后重试或填写 UC 频道 ID。',
+  CHANNEL_RESPONSE_TOO_LARGE: 'YouTube 频道页面超出解析上限，未保存订阅。',
+  YOUTUBE_ACCESS_BLOCKED: 'YouTube 拒绝访问或要求验证，请检查运行节点网络。',
+  YOUTUBE_RATE_LIMITED: 'YouTube 暂时限流，请稍后重试。',
+  DEMO_CHANNEL_HANDLE:
+    '演示模式不访问真实频道；可用 @feedrelay-demo 体验，或填写 UC 频道 ID。真实 @频道解析需在非演示模式运行。',
   INVALID_MAIL_RULE: '请填写完整的发件邮箱地址。',
   SOURCE_LIMIT: '已达到订阅源数量上限。',
   IMAP_NOT_ENABLED: '尚未配置邮箱连接。',
   IMAP_AUTH_FAILED: '邮箱认证失败，请检查 IMAP 开关和授权码。',
   IMAP_CONNECTION_FAILED: '邮箱连接失败，稍后重试。',
-  YOUTUBE_NETWORK_ERROR: 'YouTube RSS 连接失败，请检查服务器网络。',
+  YOUTUBE_NETWORK_ERROR:
+    '服务端无法连接 YouTube，请检查服务器网络或配置 YOUTUBE_PROXY_URL；浏览器代理不会自动作用于服务端。',
   MAILBOX_EPOCH_CHANGED: '邮箱标识已变化，已暂停规则，请重新建立基线。',
   SEND_UNCONFIRMED: '发送结果不确定，请在飞书人工核查。',
   DEMO_ACCEPTED: '模拟发送成功',
@@ -1151,11 +1159,12 @@ onUnmounted(() => {
           </div>
           <label>名称<input v-model="form.name" required maxlength="100" /></label
           ><label v-if="form.type === 'youtube'"
-            >频道 ID / 标准频道链接<input
+            >频道地址 / ID<input
               v-model="form.channel"
               :disabled="!!editing"
               required
-              placeholder="UC… / https://www.youtube.com/channel/UC…" /></label
+              maxlength="2048"
+              placeholder="https://www.youtube.com/@频道名 / UC…" /></label
           ><template v-else-if="form.type === 'email'"
             ><label
               >发件邮箱地址<input
@@ -1198,7 +1207,7 @@ onUnmounted(() => {
           <p v-if="error" class="error" role="alert">{{ error }}</p>
           <div class="form-footer">
             <button type="button" @click="editor = false">取消</button
-            ><button class="primary" :disabled="busy">保存订阅源</button>
+            ><button class="primary" :disabled="busy">{{ busy ? '保存中…' : '保存订阅源' }}</button>
           </div>
         </form>
       </section>

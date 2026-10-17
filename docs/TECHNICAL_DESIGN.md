@@ -71,8 +71,8 @@ Worker: 到期调度 -> 来源适配器 -> 规范化条目 -> 待发送记录 ->
 
 ## 4. YouTube 增量流程
 
-1. 校验频道 ID 或标准频道链接，生成受控的频道 Feed 地址；不直接抓取任意用户 URL。
-2. 按已验证地址获取，限制响应体积、超时与重定向；解析 Atom 及视频 ID、频道 ID、发布时间与简介。
+1. 添加时支持ID/标准链接与@handle，后者按FR-20读取频道页并解析固定UC ID；只保存ID。生成受控的频道Feed地址，不直接抓取任意用户URL。
+2. 固定YouTube HTTPS主机，限制响应体积、超时与重定向；解析Atom及视频ID、频道ID、发布时间与简介。
 3. 首次成功检查在事务中登记当前可见 ID，建立静默基线；只有整体成功才能设置 initialized。
 4. 后续检查将未见过的视频保存为 item；在同一事务中创建关联与待发送记录，并更新已持久化的扫描状态。
 5. 已有视频只更新可变元数据；标题和简介变更不再发送“新视频”。
@@ -277,3 +277,13 @@ DNS lookup 的全部 A/AAAA 地址均须为公网 unicast；IPv4-mapped IPv6 和
 `server/portable.ts` 采用版本化白名单 JSON，仅含来源定义/投递方式；邮箱账户引用为 default。导出 RSS URL 需单独确认，默认省略。导入先校验全文件与数量、生成预览哈希；提交重新校验并比较哈希。哈希只绑定文件内容，不是权限凭证；写操作仍依赖会话、Origin 和 CSRF。
 
 应用导入在单事务内跳过现存/文件内重复项，全部新增来源暂停且关闭通知，没有网络请求；拒绝凭证、游标、enabled 等字段。文件上限30KB、最多25项，且满足10频道、10 RSS、5邮件规则上限。导出文件仍可能含私人发件地址，不能自动上传 Git。恢复支持 v1/v2 备份，先升级复制出的临时库，待发日报成员和分片转 unknown，禁止陈旧快照盲目回放。
+
+## 16. YouTube @频道解析（FR-20）
+
+`server/youtube.ts`分开处理纯输入标准化、文档元信息解析和网络传输。添加API异步将handle解析为UC ID，再执行原有normalizeSource、容量和唯一键校验；保存默认暂停，不在数据库事务中等待网络。Store/导入导出仍只处理标准ID，schema不变。
+
+只接受YouTube HTTPS频道地址、@用户名或UC ID，剥离白名单频道分页与分享参数后重建固定`www.youtube.com/@…`地址；拒绝其他主机、凭证、端口、片段、视频/跳转路径。htmlparser2流式读取文档级canonical/og:url，多个合法候选必须一致；不执行JS，不搜索任意channelId/identifier，避免推荐内容误识别。YouTube实测把元信息放在body，不能只读head；响应限4MB、15秒、拒绝自动重定向，失败不保存。
+
+每个Engine持有专用Undici Agent/ProxyAgent；锁定与Node24内置fetch兼容的Undici7，显式dispatcher不修改全局出口、不继承系统代理。`YOUTUBE_PROXY_URL`同时用于解析与YouTube RSS，字幕、通用RSS、邮件、模型与飞书出口不变；关闭Engine时销毁连接池。代理是部署者信任的基础设施，不是任意用户可写入的代理服务。
+
+演示适配器仅把`@feedrelay-demo`映射到合成UC ID，真实handle返回明确提示；基础无Key流程不引入YouTube API Key或Python依赖。页面结构和网络仍可能变化；直填UC ID只跳过地址解析，不保证RSS可达，也不保证未来handle改名后继续追踪同一用户名。

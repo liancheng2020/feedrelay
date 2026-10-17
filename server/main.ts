@@ -10,7 +10,7 @@ const store = new Store(config.dataDir, config.demo ? 'demo' : 'live');
 const release = processLock(config.dataDir, 'web');
 if (config.demo) seedDemo(store);
 const engine = new Engine(store, config, config.demo ? demoAdapters(store, config) : {});
-const stopWorker = config.embedWorker ? startLoop(engine) : async () => {};
+const stopWorker = config.embedWorker ? startLoop(engine) : () => engine.stop();
 const server = createApp(store, config, engine).listen(config.port, config.host, () =>
   console.log(
     `FeedRelay API: http://${config.host}:${config.port}${config.demo ? ' (demo, no external services)' : ''}`,

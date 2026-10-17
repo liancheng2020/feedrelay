@@ -6,26 +6,9 @@ import { createHash } from 'node:crypto';
 import { AppError, preview, type Config } from './config.js';
 import type { Incoming, Source } from './store.js';
 import { feedUrl } from './rss.js';
+import { channelId } from './youtube.js';
+export { channelId } from './youtube.js';
 
-export function channelId(input: string) {
-  let id = input.trim();
-  if (id.startsWith('https://')) {
-    const url = new URL(id);
-    if (
-      !['www.youtube.com', 'youtube.com'].includes(url.hostname) ||
-      url.username ||
-      url.password ||
-      url.port ||
-      url.search ||
-      url.hash
-    )
-      throw new AppError('INVALID_CHANNEL');
-    id = url.pathname.replace(/^\/channel\//, '').replace(/\/$/, '');
-  }
-  if (!/^UC[A-Za-z0-9_-]{22}$/.test(id))
-    throw new AppError(id.includes('@') ? 'CHANNEL_HANDLE_NOT_SUPPORTED' : 'INVALID_CHANNEL');
-  return id;
-}
 export function normalizeSource(input: Record<string, unknown>) {
   if (!['youtube', 'email', 'rss'].includes(String(input.type)))
     throw new AppError('INVALID_SOURCE_TYPE');

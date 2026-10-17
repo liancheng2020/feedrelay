@@ -3,6 +3,7 @@ import { Store, type Incoming } from './store.js';
 import { channelId, type Envelope } from './adapters.js';
 import type { Adapters } from './engine.js';
 import { freezeDigest } from './digest.js';
+import { resolveDemoChannel } from './youtube.js';
 
 const channels = ['UC' + 'a'.repeat(22), 'UC' + 'b'.repeat(22)];
 export function seedDemo(store: Store) {
@@ -120,6 +121,7 @@ export function demoAdapters(store: Store, config: Config): Adapters {
         0,
     );
   return {
+    resolveChannel: resolveDemoChannel,
     async rss() {
       const n = sequence();
       return {

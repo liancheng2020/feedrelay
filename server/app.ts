@@ -155,8 +155,14 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   router.get('/api/sources', (ctx) => {
     ctx.body = store.sources();
   });
-  router.post('/api/sources', (ctx) => {
-    const input = normalizeSource(ctx.request.body as Record<string, unknown>);
+  router.post('/api/sources', async (ctx) => {
+    const raw = ctx.request.body as Record<string, unknown>;
+    const input = normalizeSource({
+      ...raw,
+      ...(raw.type === 'youtube'
+        ? { channel: await engine.adapters.resolveChannel(String(raw.channel || '')) }
+        : {}),
+    });
     if (
       input.type === 'rss' &&
       (ctx.request.body as { publicConfirmed?: boolean }).publicConfirmed !== true
@@ -291,7 +297,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       items: store
         .all<
           Item & Partial<Delivery>
-        >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY i.discovered DESC,i.rowid DESC LIMIT 30 OFFSET ?`, ...params, (page - 1) * 30)
+        >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY COALESCE(i.received,i.published,i.discovered) DESC,i.discovered DESC,i.rowid DESC LIMIT 30 OFFSET ?`, ...params, (page - 1) * 30)
         .map((i) => ({ ...i, text: preview(i.text) })),
     };
   });

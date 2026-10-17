@@ -26,7 +26,8 @@ export function fixture(t: TestContext, adapters: Partial<Adapters> = {}) {
     send: async () => ({ status: 'sent' }),
     ...adapters,
   });
-  t.after(() => {
+  t.after(async () => {
+    await engine.stop();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });

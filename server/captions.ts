@@ -8,7 +8,7 @@ import { contentHash, normalizeQuote, type Brief } from './sift.js';
 
 export const CAPTION_SCOPE = 'YouTube 字幕（不含画面，时间定位仅供参考）';
 export const MAX_CAPTION_TEXT = 48000;
-const revision = 'youtube-captions-1';
+const revision = 'youtube-captions-2';
 export interface Caption {
   videoId: string;
   language: string;
@@ -49,7 +49,7 @@ export function parseCaption(value: unknown, id: string): Caption {
   )
     throw new AppError('YOUTUBE_INVALID_CAPTION');
   if (data.duration > 14400) throw new AppError('YOUTUBE_VIDEO_TOO_LONG');
-  const units = new Map<number, string[]>();
+  const units: { second: number; end: number; parts: string[]; length: number }[] = [];
   let previous = '',
     lastStart = -1,
     lastEnd = -1,
@@ -79,11 +79,23 @@ export function parseCaption(value: unknown, id: string): Caption {
     size += text.length;
     if (size > MAX_CAPTION_TEXT) throw new AppError('YOUTUBE_CAPTION_TOO_LONG');
     const second = Math.floor(cue.start / 1000);
-    if (!units.has(second)) units.set(second, []);
-    units.get(second)!.push(text);
+    const unit = units.at(-1);
+    // Automatic cues often split a sentence every 1-2 seconds. Keep short, contiguous
+    // passages together so literal evidence can cover a sentence without losing its start time.
+    if (
+      unit &&
+      second - unit.second < 20 &&
+      cue.start <= unit.end + 5000 &&
+      unit.length + text.length + 1 <= 600
+    ) {
+      unit.parts.push(text);
+      unit.length += text.length + 1;
+      unit.end = Math.max(unit.end, cue.start + cue.duration);
+    } else
+      units.push({ second, end: cue.start + cue.duration, parts: [text], length: text.length });
   }
-  const text = [...units]
-    .map(([second, values]) => `[${timeLabel(second)}] ${values.join(' ')}`)
+  const text = units
+    .map(({ second, parts }) => `[${timeLabel(second)}] ${parts.join(' ')}`)
     .join('\n\n');
   if (!text.trim()) throw new AppError('YOUTUBE_EMPTY_CAPTION');
   if (text.length > MAX_CAPTION_TEXT) throw new AppError('YOUTUBE_CAPTION_TOO_LONG');

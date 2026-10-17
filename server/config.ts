@@ -50,6 +50,7 @@ export function readConfig(env = process.env) {
       : env.SESSION_SECRET || '',
     cookieSecure: env.COOKIE_SECURE === '1',
     embedWorker: demo || env.EMBED_WORKER === '1',
+    youtubeProxy: httpProxy(env.YOUTUBE_PROXY_URL || '', 'INVALID_YOUTUBE_PROXY'),
     imap: {
       enabled: env.IMAP_ENABLED === '1',
       host: env.IMAP_HOST || '',
@@ -75,7 +76,7 @@ export function readConfig(env = process.env) {
     captions: {
       enabled: env.YOUTUBE_CAPTIONS_ENABLED === '1',
       python: env.YOUTUBE_CAPTIONS_PYTHON ? resolve(env.YOUTUBE_CAPTIONS_PYTHON) : '',
-      proxy: captionProxy(env.YOUTUBE_CAPTIONS_PROXY_URL || ''),
+      proxy: httpProxy(env.YOUTUBE_CAPTIONS_PROXY_URL || '', 'INVALID_YOUTUBE_CAPTIONS_PROXY'),
     },
   };
   if (!demo && config.captions.enabled && !config.captions.python)
@@ -116,7 +117,7 @@ export function readConfig(env = process.env) {
   return config;
 }
 const verifyHash = (hash: string) => /^scrypt:[a-f0-9]{32}:[a-f0-9]{128}$/.test(hash);
-function captionProxy(value: string) {
+function httpProxy(value: string, code: string) {
   if (!value) return '';
   try {
     const url = new URL(value);
@@ -131,7 +132,7 @@ function captionProxy(value: string) {
       throw new Error();
     return url.origin;
   } catch {
-    throw new AppError('INVALID_YOUTUBE_CAPTIONS_PROXY');
+    throw new AppError(code);
   }
 }
 export type Config = ReturnType<typeof readConfig>;

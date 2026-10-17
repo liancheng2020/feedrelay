@@ -28,7 +28,7 @@ test('desktop: browse, resolve uncertainty, manage source and settings', async (
   await page.getByRole('button', { name: '添加订阅源', exact: true }).click();
   const editor = page.getByRole('dialog', { name: '订阅源设置' });
   await editor.getByLabel('名称', { exact: true }).fill('浏览器验证频道');
-  await editor.getByLabel('频道 ID / 标准频道链接').fill('UC' + 'z'.repeat(22));
+  await editor.getByLabel('频道地址 / ID').fill('UC' + 'z'.repeat(22));
   await editor.getByRole('button', { name: '保存订阅源' }).click();
   const row = page.locator('.source-row').filter({ hasText: '浏览器验证频道' });
   await expect(row.getByText('已暂停')).toBeVisible();

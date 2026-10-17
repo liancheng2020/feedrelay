@@ -106,7 +106,7 @@ test('YT-I02: JSON3 normalization keeps timestamps, removes adjacent rolling pre
     },
     id,
   );
-  assert.equal(caption.text, '[00:01] Hello world\n\n[00:02] again');
+  assert.equal(caption.text, '[00:01] Hello world again');
   assert.throws(() => parseCaption(raw(''), id), /YOUTUBE_EMPTY_CAPTION/);
   assert.throws(() => parseCaption({ ...raw(), duration: 14401 }, id), /YOUTUBE_VIDEO_TOO_LONG/);
   assert.equal(
@@ -142,6 +142,46 @@ test('YT-I02: JSON3 normalization keeps timestamps, removes adjacent rolling pre
     /SUMMARY_UNSUPPORTED_QUOTE/,
   );
   assert.throws(() => captionEvidence(result, { ...caption, text: 'changed' }), /CACHE_INVALID/);
+});
+
+test('YT-I02: contiguous caption fragments form bounded passages with literal cross-cue evidence', () => {
+  const caption = parseCaption(
+    {
+      ...raw(),
+      cues: [
+        { start: 0, duration: 2000, text: 'Docker can package software' },
+        { start: 2000, duration: 2000, text: 'into containers that run reliably.' },
+        { start: 21000, duration: 2000, text: 'A new time window.' },
+        { start: 30000, duration: 1000, text: 'A separated passage.' },
+        { start: 31000, duration: 1000, text: 'x'.repeat(590) },
+      ],
+    },
+    id,
+  );
+  assert.equal(
+    caption.text,
+    '[00:00] Docker can package software into containers that run reliably.\n\n' +
+      '[00:21] A new time window.\n\n[00:30] A separated passage.\n\n[00:31] ' +
+      'x'.repeat(590),
+  );
+  const point = {
+    title: 'Containers',
+    text: 'Packages software.',
+    quote: 'software into containers',
+    locator: '[00:00]',
+  };
+  assert.equal(
+    captionEvidence({ oneLiner: 'Docker', points: [point] }, caption).points[0].url,
+    `https://www.youtube.com/watch?v=${id}&t=0s`,
+  );
+  assert.throws(
+    () =>
+      captionEvidence(
+        { oneLiner: 'Docker', points: [{ ...point, quote: 'reliably. A new time window.' }] },
+        caption,
+      ),
+    /SUMMARY_UNSUPPORTED_QUOTE/,
+  );
 });
 
 test('YT-I03: durable caption task, cache and timestamped supplement share the original summary queue', async (t) => {

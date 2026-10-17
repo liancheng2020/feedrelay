@@ -16,8 +16,10 @@ import { freezeDigest } from './digest.js';
 import { SummaryService } from './summary.js';
 import { createSiftAdapter, demoModelFetch } from './sift.js';
 import { createCaptionAdapter } from './captions.js';
+import { resolveChannel, resolveDemoChannel, youtubeTransport } from './youtube.js';
 
 export interface Adapters {
+  resolveChannel: (input: string) => Promise<string>;
   feed: typeof fetchFeed;
   rss: typeof fetchRss;
   mailbox: () => Promise<MailSession>;
@@ -28,6 +30,7 @@ export class Engine {
   private busy = false;
   private stopped = false;
   private activeToken = '';
+  private youtubeClient: ReturnType<typeof youtubeTransport>;
   readonly destination: string;
   adapters: Adapters;
   summaries: SummaryService;
@@ -47,6 +50,7 @@ export class Engine {
     if (!config.demo && config.imap.enabled)
       store.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'mailbox_identity', identity);
     this.destination = destinationRef(config);
+    this.youtubeClient = youtubeTransport(config.youtubeProxy);
     this.summaries = new SummaryService(
       store,
       createSiftAdapter(config),
@@ -55,7 +59,10 @@ export class Engine {
       createCaptionAdapter(config),
     );
     this.adapters = {
-      feed: fetchFeed,
+      resolveChannel: config.demo
+        ? resolveDemoChannel
+        : (input) => resolveChannel(input, this.youtubeClient.request),
+      feed: (channel, cache) => fetchFeed(channel, cache, this.youtubeClient.request),
       rss: fetchRss,
       mailbox: () => connectMailbox(config),
       send: feishuSender(config),
@@ -114,6 +121,7 @@ export class Engine {
   async stop() {
     this.stopped = true;
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 25));
+    await this.youtubeClient.close();
   }
   async execute(job: Job) {
     this.activeToken = job.token;
