@@ -33,6 +33,8 @@ class CaptionTests(unittest.TestCase):
             def extract_info(self, url, download):
                 self.assert_url = url
                 if download is not False: raise AssertionError("media forbidden")
+                if info.get('blocked'):
+                    options['logger'].warning('Subtitles skipped: PO token required')
                 return info
             def urlopen(self, url): return io.BytesIO(raw)
 
@@ -48,6 +50,10 @@ class CaptionTests(unittest.TestCase):
             raw = b"x" * 2_000_001
             with self.assertRaisesRegex(captions.CaptionError, "TOO_LARGE"):
                 captions.extract("abcdefghijk", "", "/trusted/node")
+            info['subtitles'] = {}
+            info['blocked'] = True
+            with self.assertRaisesRegex(captions.CaptionError, 'YOUTUBE_ACCESS_BLOCKED'):
+                captions.extract('abcdefghijk', '', '/trusted/node')
 
 
 if __name__ == "__main__":

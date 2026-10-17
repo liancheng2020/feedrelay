@@ -30,6 +30,8 @@ export function verifyPassword(password: string, hash: string) {
 }
 export function readConfig(env = process.env) {
   const demo = env.FEEDRELAY_DEMO === '1';
+  const pushChannel = env.PUSH_CHANNEL || 'feishu';
+  if (!['feishu', 'weixin'].includes(pushChannel)) throw new AppError('INVALID_PUSH_CHANNEL');
   const origin = new URL(
     env.APP_ORIGIN ||
       (env.NODE_ENV === 'production' ? 'http://localhost:8787' : 'http://localhost:5183'),
@@ -50,7 +52,7 @@ export function readConfig(env = process.env) {
       : env.SESSION_SECRET || '',
     cookieSecure: env.COOKIE_SECURE === '1',
     embedWorker: demo || env.EMBED_WORKER === '1',
-    pushChannel: (env.PUSH_CHANNEL || 'feishu') as 'feishu' | 'weixin',
+    pushChannel: (demo ? 'feishu' : pushChannel) as 'feishu' | 'weixin',
     youtubeProxy: httpProxy(env.YOUTUBE_PROXY_URL || '', 'INVALID_YOUTUBE_PROXY'),
     imap: {
       enabled: env.IMAP_ENABLED === '1',
@@ -66,18 +68,19 @@ export function readConfig(env = process.env) {
       secret: env.FEISHU_APP_SECRET || '',
       openId: env.FEISHU_OPEN_ID || '',
     },
-    sift: {
-      enabled: env.SIFT_ENABLED === '1',
-      dir: env.SIFT_DIR ? resolve(env.SIFT_DIR) : '',
-      apiKey: env.SIFT_API_KEY || '',
-      model: env.SIFT_MODEL || 'deepseek-flash',
-      inputPrice: Number(env.SIFT_INPUT_CNY_PER_MILLION || 0),
-      outputPrice: Number(env.SIFT_OUTPUT_CNY_PER_MILLION || 0),
+    deepseek: {
+      enabled: env.DEEPSEEK_ENABLED === '1',
+      apiKey: env.DEEPSEEK_API_KEY || '',
+      model: env.DEEPSEEK_MODEL || 'deepseek-flash',
+      inputPrice: Number(env.DEEPSEEK_INPUT_CNY_PER_MILLION || 0),
+      outputPrice: Number(env.DEEPSEEK_OUTPUT_CNY_PER_MILLION || 0),
     },
     captions: {
       enabled: env.YOUTUBE_CAPTIONS_ENABLED === '1',
       python: env.YOUTUBE_CAPTIONS_PYTHON ? resolve(env.YOUTUBE_CAPTIONS_PYTHON) : '',
       proxy: httpProxy(env.YOUTUBE_CAPTIONS_PROXY_URL || '', 'INVALID_YOUTUBE_CAPTIONS_PROXY'),
+      asr: env.YOUTUBE_ASR_ENABLED === '1',
+      model: resolve(env.YOUTUBE_ASR_MODEL || '.cache/asr-model'),
     },
   };
   if (!['feishu', 'weixin'].includes(config.pushChannel))
@@ -86,15 +89,14 @@ export function readConfig(env = process.env) {
     throw new AppError('INVALID_YOUTUBE_CAPTIONS_CONFIG');
   if (
     !demo &&
-    config.sift.enabled &&
-    (!config.sift.dir ||
-      !config.sift.apiKey ||
-      !/^[a-zA-Z0-9._-]{1,80}$/.test(config.sift.model) ||
-      ![config.sift.inputPrice, config.sift.outputPrice].every(
+    config.deepseek.enabled &&
+    (!config.deepseek.apiKey ||
+      !/^[a-zA-Z0-9._-]{1,80}$/.test(config.deepseek.model) ||
+      ![config.deepseek.inputPrice, config.deepseek.outputPrice].every(
         (n) => Number.isFinite(n) && n > 0 && n <= 10000,
       ))
   )
-    throw new AppError('INVALID_SIFT_CONFIG');
+    throw new AppError('INVALID_DEEPSEEK_CONFIG');
   if (!demo && (!verifyHash(config.passwordHash) || config.sessionSecret.length < 32))
     throw new AppError('RUN_NPM_SETUP_FIRST');
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)

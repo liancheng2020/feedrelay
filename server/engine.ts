@@ -14,7 +14,7 @@ import {
 import { fetchRss } from './rss.js';
 import { freezeDigest } from './digest.js';
 import { SummaryService } from './summary.js';
-import { createSiftAdapter, demoModelFetch } from './sift.js';
+import { createDeepSeekAdapter, demoModelFetch } from './deepseek.js';
 import { createCaptionAdapter } from './captions.js';
 import { resolveChannel, resolveDemoChannel, youtubeTransport } from './youtube.js';
 import { Weixin } from './weixin.js';
@@ -54,7 +54,7 @@ export class Engine {
     this.youtubeClient = youtubeTransport(config.youtubeProxy);
     this.summaries = new SummaryService(
       store,
-      createSiftAdapter(config),
+      createDeepSeekAdapter(config),
       this.destination,
       config.demo ? demoModelFetch : fetch,
       createCaptionAdapter(config),
@@ -141,6 +141,7 @@ export class Engine {
   }
   async stop() {
     this.stopped = true;
+    this.summaries.cancel();
     await this.weixin.stop();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 25));
     await this.youtubeClient.close();

@@ -1,26 +1,33 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { AppError, type Config } from './config.js';
-import { contentHash, normalizeQuote, type Brief } from './sift.js';
+import { contentHash, normalizeQuote, type Brief } from './deepseek.js';
 
 export const CAPTION_SCOPE = 'YouTube 字幕（不含画面，时间定位仅供参考）';
+export const ASR_SCOPE = 'YouTube 全程音频转写（不含画面，可能误识别）';
 export const MAX_CAPTION_TEXT = 48000;
 const revision = 'youtube-captions-2';
 export interface Caption {
   videoId: string;
   language: string;
-  kind: 'manual' | 'automatic';
+  kind: 'manual' | 'automatic' | 'transcribed';
+  model?: string;
   duration: number;
   text: string;
   hash: string;
 }
 export interface CaptionAdapter {
   available: boolean;
+  asrAvailable?: boolean;
   stamp: string;
-  fetch: (id: string, signal: AbortSignal) => Promise<Caption>;
+  fetch: (
+    id: string,
+    signal: AbortSignal,
+    progress?: (stage: string, percent: number) => void,
+  ) => Promise<Caption>;
 }
 export const timeLabel = (seconds: number) => {
   const parts = [Math.floor(seconds / 60), seconds % 60];
@@ -31,7 +38,7 @@ const captionHash = (c: Omit<Caption, 'hash'>) =>
   contentHash({
     title: `${c.videoId}:${c.language}:${c.kind}:${c.duration}`,
     text: c.text,
-    scope: revision,
+    scope: c.kind === 'transcribed' ? `${revision}:asr:${c.model}` : revision,
   });
 
 export function parseCaption(value: unknown, id: string): Caption {
@@ -41,7 +48,9 @@ export function parseCaption(value: unknown, id: string): Caption {
     data.videoId !== id ||
     !/^[a-zA-Z0-9_-]{11}$/.test(id) ||
     !/^[a-zA-Z0-9-]{1,24}$/.test(data.language) ||
-    !['manual', 'automatic'].includes(data.kind) ||
+    !['manual', 'automatic', 'transcribed'].includes(data.kind) ||
+    (data.kind === 'transcribed' &&
+      (typeof data.model !== 'string' || !/^[a-zA-Z0-9._-]{1,80}$/.test(data.model))) ||
     !Number.isFinite(data.duration) ||
     data.duration <= 0 ||
     !Array.isArray(data.cues) ||
@@ -49,6 +58,8 @@ export function parseCaption(value: unknown, id: string): Caption {
   )
     throw new AppError('YOUTUBE_INVALID_CAPTION');
   if (data.duration > 14400) throw new AppError('YOUTUBE_VIDEO_TOO_LONG');
+  if (data.kind === 'transcribed' && data.duration > 3600)
+    throw new AppError('YOUTUBE_ASR_VIDEO_TOO_LONG');
   const units: { second: number; end: number; parts: string[]; length: number }[] = [];
   let previous = '',
     lastStart = -1,
@@ -103,6 +114,7 @@ export function parseCaption(value: unknown, id: string): Caption {
     videoId: id,
     language: data.language as string,
     kind: data.kind as Caption['kind'],
+    ...(data.kind === 'transcribed' ? { model: data.model as string } : {}),
     duration: data.duration as number,
     text,
   };
@@ -136,6 +148,7 @@ export async function captionProcess(
   input: object,
   signal: AbortSignal,
   timeout = 45000,
+  progress?: (stage: string, percent: number) => void,
 ) {
   const home = await mkdtemp(join(tmpdir(), 'feedrelay-captions-'));
   try {
@@ -144,13 +157,15 @@ export async function captionProcess(
       const child = spawn(python, ['-I', helper], {
         cwd: home,
         detached: true,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: {
           PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
           HOME: home,
           XDG_CONFIG_HOME: home,
           TMPDIR: home,
           LANG: 'en_US.UTF-8',
+          HF_HUB_OFFLINE: '1',
+          HF_HUB_DISABLE_TELEMETRY: '1',
         },
       });
       let out = '',
@@ -167,6 +182,23 @@ export async function captionProcess(
       if (signal.aborted) abort();
       const timer = setTimeout(() => stop('YOUTUBE_TIMEOUT'), timeout);
       child.stdout.setEncoding('utf8');
+      let progressBuffer = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        progressBuffer = (progressBuffer + chunk).slice(-4096);
+        let newline: number;
+        while ((newline = progressBuffer.indexOf('\n')) >= 0) {
+          const line = progressBuffer.slice(0, newline);
+          progressBuffer = progressBuffer.slice(newline + 1);
+          try {
+            const p = JSON.parse(line);
+            if (['downloading', 'transcribing'].includes(p.stage) && Number.isFinite(p.percent))
+              progress?.(p.stage, Math.max(0, Math.min(100, p.percent)));
+          } catch {
+            /* Ignore library diagnostics; never forward raw stderr. */
+          }
+        }
+      });
       child.stdout.on('data', (chunk: string) => {
         size += Buffer.byteLength(chunk);
         if (size > 2_000_000) stop('YOUTUBE_CAPTION_TOO_LARGE');
@@ -199,11 +231,20 @@ export async function captionProcess(
   }
 }
 
-export function createCaptionAdapter(config: Config): CaptionAdapter {
+export function createCaptionAdapter(config: Config, runProcess = captionProcess): CaptionAdapter {
   const helper = resolve('scripts/youtube-captions.py');
-  const { enabled, python, proxy } = config.captions;
+  const { enabled, python, proxy, asr, model } = config.captions;
+  const asrHelper = resolve('scripts/youtube-transcribe.py');
+  const asrAvailable =
+    enabled &&
+    asr &&
+    existsSync(python) &&
+    existsSync(join(model, 'model.bin')) &&
+    existsSync(join(model, 'config.json')) &&
+    existsSync(asrHelper);
   const available = config.demo || (enabled && existsSync(python) && existsSync(helper));
   const helperSource = existsSync(helper) ? readFileSync(helper, 'utf8') : '';
+  const asrSource = asrAvailable ? readFileSync(asrHelper, 'utf8') : '';
   const stamp = contentHash({
     title: revision,
     text: config.demo
@@ -214,13 +255,29 @@ export function createCaptionAdapter(config: Config): CaptionAdapter {
           python,
           proxy,
           helper: helperSource,
+          ...(asr
+            ? {
+                asr,
+                model,
+                asrAvailable,
+                asrSource,
+                modelConfig: asrAvailable ? readFileSync(join(model, 'config.json'), 'utf8') : '',
+                modelVersion: asrAvailable
+                  ? [
+                      statSync(join(model, 'model.bin')).size,
+                      statSync(join(model, 'model.bin')).mtimeMs,
+                    ]
+                  : [],
+              }
+            : {}),
         }),
     scope: 'captions',
   });
   return {
     available,
+    asrAvailable,
     stamp,
-    async fetch(id, signal) {
+    async fetch(id, signal, progress) {
       if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) throw new AppError('YOUTUBE_INVALID_VIDEO_ID');
       if (config.demo)
         return parseCaption(
@@ -239,10 +296,33 @@ export function createCaptionAdapter(config: Config): CaptionAdapter {
       if (!enabled || !existsSync(python)) throw new AppError('YOUTUBE_RUNTIME_UNAVAILABLE');
       if (readFileSync(helper, 'utf8') !== helperSource)
         throw new AppError('YOUTUBE_COMPONENT_CHANGED_RESTART');
-      return parseCaption(
-        await captionProcess(python, helper, { id, proxy, node: process.execPath }, signal),
-        id,
-      );
+      try {
+        return parseCaption(
+          await runProcess(python, helper, { id, proxy, node: process.execPath }, signal),
+          id,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof AppError) ||
+          !['YOUTUBE_NO_CAPTIONS', 'YOUTUBE_EMPTY_CAPTION'].includes(error.code) ||
+          !asr
+        )
+          throw error;
+        if (!asrAvailable) throw new AppError('YOUTUBE_ASR_NOT_READY');
+        if (readFileSync(asrHelper, 'utf8') !== asrSource)
+          throw new AppError('YOUTUBE_COMPONENT_CHANGED_RESTART');
+        return parseCaption(
+          await runProcess(
+            python,
+            asrHelper,
+            { id, proxy, node: process.execPath, model },
+            signal,
+            1800000,
+            progress,
+          ),
+          id,
+        );
+      }
     },
   };
 }

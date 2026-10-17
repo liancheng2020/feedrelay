@@ -15,6 +15,7 @@ COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY scripts/youtube-captions.py ./scripts/youtube-captions.py
+COPY scripts/youtube-transcribe.py ./scripts/youtube-transcribe.py
 RUN mkdir /app/data && chown node:node /app/data
 USER node
 EXPOSE 8787

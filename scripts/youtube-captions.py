@@ -38,12 +38,17 @@ def extract(video_id, proxy, node):
     plugin_dirs.value = []
 
     class Quiet:
+        subtitles_blocked = False
         def debug(self, *_): pass
-        def warning(self, *_): pass
+        def warning(self, message):
+            message = str(message).lower()
+            if 'token' in message and ('subtitles' in message or 'captions' in message):
+                self.subtitles_blocked = True
         def error(self, *_): pass
 
+    logger = Quiet()
     with YoutubeDL({
-        "logger": Quiet(), "quiet": True, "no_warnings": True,
+        "logger": logger, "quiet": True, "no_warnings": False,
         "skip_download": True, "noplaylist": True, "cachedir": False,
         "cookiefile": None, "cookiesfrombrowser": None, "usenetrc": False,
         "proxy": proxy, "socket_timeout": 8, "retries": 0, "extractor_retries": 0,
@@ -53,7 +58,12 @@ def extract(video_id, proxy, node):
         info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
         if info.get("id") != video_id or info.get("is_live"):
             raise CaptionError("YOUTUBE_VIDEO_UNAVAILABLE")
-        kind, language, url = select_track(info)
+        try:
+            kind, language, url = select_track(info)
+        except CaptionError:
+            if logger.subtitles_blocked:
+                raise CaptionError("YOUTUBE_ACCESS_BLOCKED")
+            raise
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in ("www.youtube.com", "youtube.com"):
             raise CaptionError("YOUTUBE_CAPTION_URL_BLOCKED")

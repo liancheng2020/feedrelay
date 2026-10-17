@@ -34,7 +34,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     ctx.set('Referrer-Policy', 'no-referrer');
     ctx.set(
       'Content-Security-Policy',
-      "default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' data: https://i.ytimg.com; frame-src https://www.youtube-nocookie.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     ctx.set('Cache-Control', 'no-store');
     try {
@@ -238,11 +238,42 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     );
   });
   router.post('/api/items/:id/summary', (ctx) => {
-    const b = ctx.request.body as { confirmed?: boolean; retry?: boolean };
-    if (b.confirmed !== true || (b.retry !== undefined && typeof b.retry !== 'boolean'))
+    const b = ctx.request.body as {
+      confirmed?: boolean;
+      retry?: boolean;
+      content?: unknown;
+      refresh?: boolean;
+    };
+    if (
+      b.confirmed !== true ||
+      (b.retry !== undefined && typeof b.retry !== 'boolean') ||
+      (b.refresh !== undefined && typeof b.refresh !== 'boolean')
+    )
       throw new AppError('SUMMARY_CONFIRMATION_REQUIRED');
     ctx.status = 202;
-    ctx.body = { id: engine.summaries.enqueue(String(ctx.params.id), 'manual', b.retry === true) };
+    ctx.body = {
+      id:
+        b.content === undefined
+          ? engine.summaries.enqueue(
+              String(ctx.params.id),
+              'manual',
+              b.retry === true,
+              b.refresh === true,
+            )
+          : engine.summaries.request(
+              String(ctx.params.id),
+              b.content,
+              b.retry === true,
+              b.refresh === true,
+            ),
+    };
+  });
+  router.post('/api/items/:id/summary/push', (ctx) => {
+    const b = ctx.request.body as { confirmed?: boolean; summaryId?: unknown; revision?: unknown };
+    if (b.confirmed !== true) throw new AppError('SEND_CONFIRMATION_REQUIRED');
+    if (!engine.pushReady) throw new AppError('PUSH_NOT_READY', 503);
+    ctx.status = 202;
+    ctx.body = engine.summaries.pushLatest(String(ctx.params.id), b.summaryId, b.revision);
   });
   router.post('/api/sources/:id/toggle', (ctx) => {
     const input = ctx.request.body as {
@@ -305,7 +336,15 @@ export function createApp(store: Store, config: Config, engine: Engine) {
         .all<
           Item & Partial<Delivery>
         >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY COALESCE(i.received,i.published,i.discovered) DESC,i.discovered DESC,i.rowid DESC LIMIT 30 OFFSET ?`, ...params, (page - 1) * 30)
-        .map((i) => ({ ...i, text: preview(i.text) })),
+        .map((i) => {
+          const summary = engine.summaries.list(i.id).find((row) => row.current);
+          return {
+            ...i,
+            text: preview(i.text),
+            summaryStatus: summary?.status || 'none',
+            summaryError: summary?.error || '',
+          };
+        }),
     };
   });
   router.get('/api/items/:id', (ctx) => {
@@ -315,7 +354,20 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     if (d?.part_id) d = store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.part_id);
     ctx.body = {
       ...item,
+      videoId:
+        item.kind === 'youtube' ? item.key.match(/^youtube:([a-zA-Z0-9_-]{11})$/)?.[1] || '' : '',
       summaries: engine.summaries.list(item.id),
+      transcript: engine.summaries.transcript(item.id),
+      canSummarize:
+        engine.summaries.describe().enabled &&
+        engine.summaries.describe().ready &&
+        engine.summaries.describe().stamp === engine.summaries.stamp &&
+        !item.expired &&
+        ['youtube', 'rss', 'email'].includes(item.kind) &&
+        !!store.get(
+          'SELECT 1 FROM sources s JOIN source_items si ON si.source_id=s.id WHERE si.item_id=? AND s.enabled=1 AND s.deleted=0',
+          item.id,
+        ),
       summaryAllowed:
         engine.summaries.describe().enabled &&
         engine.summaries.describe().stamp === engine.summaries.stamp &&

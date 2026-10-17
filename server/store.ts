@@ -359,7 +359,7 @@ export class Store {
   }
   private cancelOrphans() {
     this.run(
-      `UPDATE deliveries SET status='cancelled',snapshot='',error='SOURCE_DISABLED' WHERE mode<>'digest_part' AND status IN ('pending','retry_wait','digest_wait') AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id=deliveries.item_id AND i.key LIKE 'test:%') AND NOT EXISTS (SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=deliveries.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0)`,
+      `UPDATE deliveries SET status='cancelled',snapshot='',error='SOURCE_DISABLED' WHERE mode<>'digest_part' AND status IN ('pending','retry_wait','digest_wait') AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id=deliveries.item_id AND i.key LIKE 'test:%') AND NOT EXISTS (SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=deliveries.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0) AND NOT EXISTS (SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=deliveries.item_id AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off')`,
     );
     this.run(
       `UPDATE deliveries SET status='cancelled',snapshot='',error='DIGEST_MEMBER_DISABLED' WHERE mode='digest_part' AND status IN ('pending','retry_wait') AND EXISTS(SELECT 1 FROM deliveries member WHERE member.part_id=deliveries.id AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=member.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0))`,
@@ -627,7 +627,11 @@ export class Store {
             'SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=? AND s.enabled=1 AND s.notify=1 AND s.deleted=0',
             d.item_id,
           ) &&
-          !this.get("SELECT 1 FROM items WHERE id=? AND key LIKE 'test:%'", d.item_id)
+          !this.get("SELECT 1 FROM items WHERE id=? AND key LIKE 'test:%'", d.item_id) &&
+          !this.get(
+            "SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=? AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off'",
+            d.item_id,
+          )
         )
           throw new AppError('SOURCE_DISABLED', 409);
         if (

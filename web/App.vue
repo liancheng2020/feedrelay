@@ -3,7 +3,9 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import WeixinConnection, { type WeixinStatus } from './WeixinConnection.vue';
 import TransferDialog from './TransferDialog.vue';
 import SummarySettings, { type SummaryConfig } from './SummarySettings.vue';
-import ItemSummary, { type SummaryView } from './ItemSummary.vue';
+import ItemDetail from './ItemDetail.vue';
+import { type SummaryView } from './SummaryReading.vue';
+import { summaryState } from './summary-state';
 import {
   Rss,
   CirclePlay as Youtube,
@@ -17,7 +19,6 @@ import {
   LogOut,
   Send,
   Inbox,
-  ArrowUpRight,
   ChevronLeft,
   ChevronRight,
   Pencil,
@@ -65,10 +66,15 @@ interface Item {
   status?: string;
   error?: string;
   resolution?: string;
+  summaryStatus?: string;
+  summaryError?: string;
 }
 interface Detail extends Item {
+  videoId: string;
   summaries: SummaryView[];
   summaryAllowed: boolean;
+  canSummarize: boolean;
+  transcript: { language: string; kind: string; text: string } | null;
   delivery: {
     id: string;
     status: string;
@@ -116,7 +122,16 @@ const authenticated = ref(false),
   demo = ref(false),
   csrf = ref(''),
   password = ref('');
-const view = ref('updates'),
+const routeItem = () => location.hash.match(/^#items\/([a-f0-9-]{36})$/i)?.[1] || '';
+const detailId = ref(routeItem());
+const initialView = location.hash.slice(1);
+const view = ref(
+    detailId.value
+      ? 'detail'
+      : ['updates', 'sources', 'settings', 'digests'].includes(initialView)
+        ? initialView
+        : 'updates',
+  ),
   busy = ref(false),
   error = ref(''),
   notice = ref('');
@@ -206,7 +221,10 @@ const errors: Record<string, string> = {
   WEIXIN_SEND_UNCONFIRMED: '微信发送结果不确定，请先人工核查。',
   WEIXIN_DESTINATION_CHANGED: '微信绑定目标已变化，旧记录不会自动转发。',
   WEIXIN_MESSAGE_TOO_LONG: '消息超过微信通道当前4000字限制。',
-  SUMMARY_NOT_ENABLED: '请先配置 Sift，再确认启用摘要预算。',
+  SUMMARY_NOT_ENABLED: '请先配置 DeepSeek，再确认摘要预算。',
+  SUMMARY_PUSH_STALE: '摘要已变化或失效，请刷新后推送最新结果。',
+  SUMMARY_PUSH_TOO_LONG: '摘要超过消息长度限制，未静默截断或发送。',
+  ITEM_NOT_FOUND: '内容不存在或已清理，请返回列表。',
   SUMMARY_SOURCE_NOT_AUTHORIZED: '请在订阅源单独授权此来源的摘要外发。',
   INVALID_SUMMARY_POLICY: '请检查摘要开关、累计请求及费用预算。',
   SUMMARY_CONTENT_TOO_LONG: '正文过长，本版最多处理8000个UTF-16码元，不会静默截断。',
@@ -273,20 +291,17 @@ const time = (value: number | string | null | undefined) =>
   value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '尚无记录';
 const heading = computed(
   () =>
-    ({ updates: '最新更新', sources: '订阅源', settings: '投递设置', digests: '每日日报' })[
-      view.value
-    ],
+    ({
+      updates: '最新更新',
+      sources: '订阅源',
+      settings: '投递设置',
+      digests: '每日日报',
+      detail: '内容详情',
+    })[view.value],
 );
 const modalOpen = computed(
   () =>
-    !!(
-      editor.value ||
-      detail.value ||
-      activation.value ||
-      deletion.value ||
-      confirmation.value ||
-      transfer.value
-    ),
+    !!(editor.value || activation.value || deletion.value || confirmation.value || transfer.value),
 );
 let previousFocus: HTMLElement | null = null;
 const modalLayer = computed(() =>
@@ -300,9 +315,7 @@ const modalLayer = computed(() =>
           ? 'activation'
           : deletion.value
             ? 'deletion'
-            : detail.value
-              ? 'detail'
-              : '',
+            : '',
 );
 watch(modalLayer, async (open, before) => {
   document.body.style.overflow = open ? 'hidden' : '';
@@ -369,7 +382,11 @@ async function load() {
   );
   items.value = result.items;
   total.value = result.total;
-  if (detail.value) detail.value = await api<Detail>(`/items/${detail.value.id}`);
+  const id = detailId.value;
+  if (id) {
+    const result = await api<Detail>(`/items/${id}`);
+    if (id === detailId.value) detail.value = result;
+  }
 }
 async function act(fn: () => Promise<void>, message = '') {
   if (busy.value) return;
@@ -480,9 +497,7 @@ function changeMode(s: Source, event: Event) {
   };
 }
 async function inspectPart(id: string) {
-  await act(async () => {
-    detail.value = await api<Detail>(`/items/${id}`);
-  });
+  openItem(id);
 }
 function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'content' = 'mode') {
   const target = event.target as HTMLSelectElement | HTMLInputElement;
@@ -493,7 +508,9 @@ function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'cont
   const disclosure =
     s.type === 'youtube'
       ? content === 'captions'
-        ? '从 YouTube 获取的公开字幕（非画面）'
+        ? summaryConfig.value?.asrReady
+          ? '公开视频字幕或本地音频转写全文（不含画面）'
+          : '从 YouTube 获取的公开字幕（非画面）'
         : '已采集视频简介（不是字幕或全文）'
       : s.type === 'rss'
         ? '已采集Feed文本（不代表网页全文）'
@@ -515,7 +532,9 @@ function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'cont
           : [
               demo.value ? '本环境为模拟，不连接外部服务。' : `${disclosure}将发送到 DeepSeek。`,
               content === 'captions'
-                ? '仅取字幕，不读取Cookie、不下载音视频；最多48000码元、12次模型请求、4分钟，包含分块、合并与修复；失败不自动改用简介生成视频摘要。'
+                ? summaryConfig.value?.asrReady
+                  ? '优先字幕；无/空字幕时读取公开音频在本机转写（最长60分钟视频、100MB音频、35分钟任务），音频结束即清理。不读Cookie、不获取画面；全文最多48000码元、12次模型请求，仍受累计预算限制。'
+                  : '仅取字幕，不读取Cookie、不下载音视频；最多48000码元、12次模型请求、4分钟，包含分块、合并与修复；失败不自动改用简介生成视频摘要。'
                 : '',
               mode === 'auto'
                 ? '只自动处理授权后新发现且已排队提醒的条目，不处理历史收件箱。'
@@ -532,14 +551,14 @@ function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'cont
     },
   };
 }
-function generateSummary(retry: boolean) {
+function generateSummary(retry: boolean, refresh = false, content: 'feed' | 'captions' = 'feed') {
   const id = detail.value?.id;
   if (!id) return;
   confirmation.value = {
-    title: retry ? '重新处理摘要？' : '生成当前内容摘要？',
-    text: `${demo.value ? '本次为模拟处理。' : '按已授权来源范围处理：简介/邮件/Feed文本，或另行获取公开字幕后发送至 DeepSeek；字幕不包含画面理解。'} 相同有效内容复用缓存；失败或中断后的重做可能再次计费，所有请求受累计预算限制。原始提醒不会重发。`,
+    title: retry || refresh ? '重新处理摘要？' : '生成当前内容摘要？',
+    text: `${demo.value ? `本次为模拟处理：${content === 'captions' ? '公开字幕（不含画面）' : '已采集内容'}，不调用真实模型。` : `将本条${content === 'captions' ? '视频字幕或音频转写全文（不含画面）' : '已采集正文'}发送至 DeepSeek。`}${content === 'captions' && summaryConfig.value?.asrReady ? ' 优先字幕；无字幕时读取公开音频在本机转写，最长60分钟、100MB，结束清理音频；转写可能误识别，不读Cookie。' : ''} 仅按需处理，不开启此来源自动摘要。${refresh ? '重新生成会再次计费。' : '相同有效内容复用缓存。'}失败、修复也计入累计预算；原始提醒不会重发。`,
     run: async () => {
-      await api(`/items/${id}/summary`, 'POST', { confirmed: true, retry });
+      await api(`/items/${id}/summary`, 'POST', { confirmed: true, retry, refresh, content });
     },
   };
 }
@@ -556,9 +575,46 @@ async function remove() {
   });
 }
 async function inspect(item: Item) {
-  await act(async () => {
-    detail.value = await api<Detail>(`/items/${item.id}`);
-  });
+  location.hash = `items/${item.id}`;
+}
+function pushSummary(row: SummaryView) {
+  const id = detail.value?.id;
+  if (!id) return;
+  confirmation.value = {
+    title: `推送最新摘要到${pushLabel.value}？`,
+    text: `发送当前已生成的摘要、引文与来源链接到 ${overview.value?.connections.recipient || '当前接收人'}，不重新调用模型。同一版本已排队或已发送时不会重复发送。`,
+    run: async () => {
+      await api(`/items/${id}/summary/push`, 'POST', {
+        confirmed: true,
+        summaryId: row.id,
+        revision: row.revision,
+      });
+    },
+  };
+}
+function openItem(id: string) {
+  location.hash = `items/${id}`;
+}
+async function routeChanged() {
+  notice.value = '';
+  error.value = '';
+  window.scrollTo({ top: 0 });
+  detailId.value = routeItem();
+  detail.value = null;
+  view.value = detailId.value
+    ? 'detail'
+    : ['updates', 'sources', 'settings', 'digests'].includes(location.hash.slice(1))
+      ? location.hash.slice(1)
+      : 'updates';
+  if (detailId.value && authenticated.value) {
+    const id = detailId.value;
+    try {
+      const result = await api<Detail>(`/items/${id}`);
+      if (id === detailId.value) detail.value = result;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : '详情读取失败';
+    }
+  }
 }
 function resolve(action: 'retry' | 'acknowledge') {
   const d = detail.value?.delivery;
@@ -595,7 +651,9 @@ function testPush() {
 }
 function switchView(next: string) {
   view.value = next;
+  detailId.value = '';
   detail.value = null;
+  location.hash = next;
   if (next === 'settings' && overview.value) preferences.value = { ...overview.value.settings };
 }
 async function filter() {
@@ -619,6 +677,7 @@ function jobSummary(job: Job) {
 let timer: ReturnType<typeof setInterval>;
 onMounted(async () => {
   document.addEventListener('keydown', keyboard);
+  window.addEventListener('hashchange', routeChanged);
   try {
     const session = await api<{ authenticated: boolean; demo: boolean; csrf: string }>('/session');
     csrf.value = session.csrf;
@@ -637,6 +696,7 @@ onMounted(async () => {
 onUnmounted(() => {
   clearInterval(timer);
   document.removeEventListener('keydown', keyboard);
+  window.removeEventListener('hashchange', routeChanged);
   document.body.style.overflow = '';
 });
 </script>
@@ -709,7 +769,7 @@ onUnmounted(() => {
           <Plus :size="15" />模拟一轮更新
         </button>
       </div>
-      <header class="page-head">
+      <header v-if="view !== 'detail'" class="page-head">
         <div>
           <p class="eyebrow">
             {{ view === 'updates' ? 'INBOX' : view === 'sources' ? 'SUBSCRIPTIONS' : 'DELIVERY' }}
@@ -769,37 +829,62 @@ onUnmounted(() => {
           <p>启用订阅源后，首次检查只建立基线，之后的新内容才会推送。</p>
           <button @click="switchView('sources')">管理订阅源<ChevronRight :size="16" /></button>
         </div>
-        <section v-else class="item-list" aria-label="更新记录">
-          <article v-for="item in items" :key="item.id">
-            <div class="source-icon" :class="item.kind">
-              <Youtube v-if="item.kind === 'youtube'" :size="21" /><Rss
-                v-else-if="item.kind === 'rss'"
-                :size="20"
-              /><Mail v-else :size="20" />
-            </div>
-            <div class="item-main">
-              <div class="item-meta">
-                <span>{{ item.author || '内容已清理' }}</span
-                ><time>{{ time(item.received || item.published || item.discovered) }}</time>
-              </div>
-              <button class="item-title" @click="inspect(item)">
-                {{ item.title || '过期记录' }}
-              </button>
-              <p>{{ item.expired ? '正文已按保留策略清理。' : item.text || '无正文预览' }}</p>
-              <div class="item-foot">
-                <span class="badge" :class="item.status">{{
-                  item.resolution === 'user_acknowledged'
-                    ? '已人工核查'
-                    : labels[item.status || 'discovered']
-                }}</span
-                ><span v-if="item.error" class="muted">{{ explain(item.error) }}</span>
-              </div>
-            </div>
-            <button class="icon" title="查看详情" aria-label="查看详情" @click="inspect(item)">
-              <ChevronRight :size="20" />
-            </button>
-          </article>
-        </section>
+        <div v-else class="updates-table-wrap">
+          <table class="updates-table" aria-label="更新记录">
+            <thead>
+              <tr>
+                <th scope="col">标题</th>
+                <th scope="col" class="source-column">来源</th>
+                <th scope="col">AI 摘要</th>
+                <th scope="col">投递状态</th>
+                <th scope="col">时间 ↓</th>
+                <th scope="col"><span class="sr-only">详情</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in items" :key="item.id" @click="inspect(item)">
+                <td class="update-title-cell">
+                  <div>
+                    <Youtube v-if="item.kind === 'youtube'" :size="18" /><Rss
+                      v-else-if="item.kind === 'rss'"
+                      :size="18"
+                    /><Mail v-else :size="18" /><a :href="`#items/${item.id}`" @click.stop>{{
+                      item.title || '过期记录'
+                    }}</a>
+                  </div>
+                  <small class="mobile-source">{{ item.author }}</small>
+                </td>
+                <td class="source-column">{{ item.author || '—' }}</td>
+                <td data-label="AI摘要">
+                  <span
+                    class="badge"
+                    :class="summaryState(item.summaryStatus, item.summaryError).tone"
+                    >{{ summaryState(item.summaryStatus, item.summaryError).label }}</span
+                  >
+                </td>
+                <td data-label="投递">
+                  <span class="badge" :class="item.status">{{
+                    item.resolution === 'user_acknowledged'
+                      ? '已人工核查'
+                      : labels[item.status || 'discovered']
+                  }}</span>
+                </td>
+                <td class="update-time" data-label="时间">
+                  <time>{{ time(item.received || item.published || item.discovered) }}</time>
+                </td>
+                <td class="update-arrow">
+                  <a
+                    :href="`#items/${item.id}`"
+                    :aria-label="`查看详情：${item.title}`"
+                    title="查看详情"
+                    @click.stop
+                    ><ChevronRight :size="17"
+                  /></a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <footer class="pagination">
           <span>第 {{ page }} 页</span
           ><button
@@ -924,7 +1009,9 @@ onUnmounted(() => {
                   >
                     <option value="feed">视频简介</option>
                     <option value="captions" :disabled="!summaryConfig?.captionsReady">
-                      视频字幕 · 不含画面
+                      {{
+                        summaryConfig?.asrReady ? '视频内容 · 字幕/本地转写' : '视频字幕 · 不含画面'
+                      }}
                     </option>
                   </select></label
                 >
@@ -1039,7 +1126,7 @@ onUnmounted(() => {
             (value) =>
               act(async () => {
                 await api('/summaries/settings', 'PUT', { ...value, confirmed: true });
-              }, '摘要预算已保存；请在订阅源单独授权。')
+              }, '摘要预算已保存。')
           "
         />
         <form
@@ -1096,76 +1183,32 @@ onUnmounted(() => {
           </div>
         </form>
       </template>
+      <ItemDetail
+        v-if="view === 'detail' && detail"
+        :key="detail.id"
+        :detail="detail"
+        :demo="demo"
+        :busy="busy"
+        :captions-ready="!!summaryConfig?.captionsReady"
+        :asr-ready="!!summaryConfig?.asrReady"
+        :push-ready="!!overview?.connections.pushReady"
+        :push-label="pushLabel"
+        :time="time"
+        :explain="explain"
+        :labels="labels"
+        @back="switchView('updates')"
+        @generate="generateSummary"
+        @push="pushSummary"
+        @resolve="resolve"
+        @settings="switchView('settings')"
+        @delivery="openItem"
+      />
+      <div v-else-if="view === 'detail'" class="empty">
+        <LoaderCircle v-if="!error" :size="24" class="spin" />
+        <p>{{ error ? '无法打开此条内容。' : '正在读取详情…' }}</p>
+        <button @click="switchView('updates')"><ChevronLeft :size="16" />返回列表</button>
+      </div>
     </main>
-    <div v-if="detail" class="overlay" @click.self="detail = null">
-      <section class="drawer" role="dialog" aria-modal="true" aria-label="内容详情">
-        <header>
-          <span class="eyebrow">{{
-            detail.kind === 'email'
-              ? '邮件详情'
-              : detail.kind === 'digest'
-                ? '日报分片'
-                : detail.kind === 'rss'
-                  ? 'RSS 条目'
-                  : '视频简介'
-          }}</span
-          ><button class="icon" aria-label="关闭详情" @click="detail = null">
-            <X :size="20" />
-          </button>
-        </header>
-        <h2>{{ detail.title || '内容已清理' }}</h2>
-        <p class="muted">
-          {{ detail.author }} · {{ time(detail.received || detail.published || detail.discovered) }}
-        </p>
-        <span class="badge" :class="detail.delivery?.status">{{
-          detail.delivery?.resolution === 'user_acknowledged'
-            ? '已人工核查'
-            : labels[detail.delivery?.status || 'discovered']
-        }}</span>
-        <p v-if="detail.delivery?.error" class="alert error">
-          {{ explain(detail.delivery.error) }}
-        </p>
-        <p v-if="detail.delivery?.mode === 'digest_part'" class="section-note">
-          此记录属于日报分片。核查与重发作用于整个分片，不会单独发送某一成员。
-        </p>
-        <p class="body-text">{{ detail.expired ? '正文已过保留期。' : detail.text }}</p>
-        <ItemSummary
-          v-if="['youtube', 'email', 'rss'].includes(detail.kind) && !detail.expired"
-          :rows="detail.summaries"
-          :allowed="detail.summaryAllowed"
-          :busy="busy"
-          @generate="generateSummary"
-        />
-        <a
-          v-if="detail.url"
-          :href="detail.url"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="external"
-          >查看来源原文<ArrowUpRight :size="17"
-        /></a>
-        <p v-else-if="detail.kind === 'email'" class="muted">
-          邮件无公共链接，请在邮箱按发件地址与主题查看原文。
-        </p>
-        <section class="attempts">
-          <h3>发送记录</h3>
-          <p v-if="!detail.attempts.length" class="muted">尚无发送尝试。</p>
-          <div v-for="(attempt, index) in detail.attempts" :key="index">
-            <time>{{ time(attempt.at) }}</time
-            ><strong>{{ labels[attempt.status] }}</strong
-            ><small>{{ attempt.code }}</small>
-          </div>
-        </section>
-        <div v-if="['unknown', 'failed'].includes(detail.delivery?.status || '')" class="actions">
-          <button :disabled="busy || !!detail.expired" @click="resolve('retry')">
-            <RefreshCw :size="17" />确认后重发</button
-          ><button :disabled="busy" @click="resolve('acknowledge')">
-            <Check :size="17" />已核查
-          </button>
-        </div>
-        <p class="muted">“已接受”仅表示推送接口成功接受消息，不代表已读。</p>
-      </section>
-    </div>
     <div v-if="editor" class="overlay" @click.self="editor = false">
       <section class="modal" role="dialog" aria-modal="true" aria-label="订阅源设置">
         <header>

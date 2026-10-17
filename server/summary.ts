@@ -6,12 +6,18 @@ import {
   contentHash,
   validateBrief,
   boundedModelFetch,
-  type SiftAdapter,
+  type SummaryAdapter,
   type SummaryInput,
   type Brief,
   summaryLimits,
-} from './sift.js';
-import { CAPTION_SCOPE, captionEvidence, type Caption, type CaptionAdapter } from './captions.js';
+} from './deepseek.js';
+import {
+  CAPTION_SCOPE,
+  ASR_SCOPE,
+  captionEvidence,
+  type Caption,
+  type CaptionAdapter,
+} from './captions.js';
 
 export interface SummaryRow {
   id: string;
@@ -50,9 +56,13 @@ const scope = (kind: string) =>
       : '已采集邮件正文（不含附件）';
 
 export class SummaryService {
+  private controller?: AbortController;
+  cancel() {
+    this.controller?.abort();
+  }
   constructor(
     public store: Store,
-    public adapter: SiftAdapter,
+    public adapter: SummaryAdapter,
     public destination: string,
     public transport: typeof fetch = fetch,
     public captions?: CaptionAdapter,
@@ -93,6 +103,7 @@ export class SummaryService {
       inputPrice: this.adapter.inputPrice,
       outputPrice: this.adapter.outputPrice,
       captionsReady: !!this.captions?.available,
+      asrReady: !!this.captions?.asrAvailable,
     };
   }
   configure(input: unknown) {
@@ -218,8 +229,29 @@ export class SummaryService {
     this.store.run(
       "UPDATE model_calls SET status='unknown' WHERE status='running' AND NOT EXISTS(SELECT 1 FROM summaries s WHERE s.id=model_calls.summary_id AND s.status='running')",
     );
+    this.store.run(
+      "DELETE FROM meta WHERE key LIKE 'summary-progress:%' AND NOT EXISTS(SELECT 1 FROM summaries s WHERE 'summary-progress:' || s.id=meta.key AND s.status='running')",
+    );
   }
-  enqueue(itemId: string, origin: 'manual' | 'auto' = 'manual', retry = false) {
+  request(itemId: string, content: unknown, retry = false, refresh = false) {
+    if (!['feed', 'captions'].includes(String(content)))
+      throw new AppError('INVALID_SUMMARY_CONTENT');
+    const item = this.store.get<Item>('SELECT * FROM items WHERE id=?', itemId);
+    if (!item || item.expired) throw new AppError('CONTENT_EXPIRED');
+    const source = this.store.get<Source>(
+      'SELECT s.* FROM sources s JOIN source_items si ON si.source_id=s.id WHERE si.item_id=? AND s.enabled=1 AND s.deleted=0 ORDER BY s.created LIMIT 1',
+      itemId,
+    );
+    if (!source) throw new AppError('SUMMARY_SOURCE_NOT_AUTHORIZED');
+    if (
+      source.summary_consent !== this.stamp ||
+      source.summary_mode === 'off' ||
+      source.summary_content !== content
+    )
+      this.authorize(source.id, 'manual', false, true, content);
+    return this.enqueue(itemId, 'manual', retry, refresh);
+  }
+  enqueue(itemId: string, origin: 'manual' | 'auto' = 'manual', retry = false, refresh = false) {
     return this.store.tx(() => {
       if (!this.allowed()) throw new AppError('SUMMARY_NOT_ENABLED');
       const item = this.store.get<Item>('SELECT * FROM items WHERE id=?', itemId);
@@ -228,7 +260,7 @@ export class SummaryService {
         throw new AppError('SUMMARY_NO_CONTENT');
       const cached = this.store
         .all<SummaryRow>(
-          'SELECT * FROM summaries WHERE item_id=? AND stamp=? ORDER BY created DESC',
+          'SELECT * FROM summaries WHERE item_id=? AND stamp=? ORDER BY created DESC,rowid DESC',
           itemId,
           this.stamp,
         )
@@ -252,13 +284,19 @@ export class SummaryService {
       if (old) {
         if (
           (retry && ['failed', 'unknown'].includes(old.status)) ||
+          (refresh && old.status === 'succeeded') ||
           (origin === 'manual' && old.status === 'cancelled')
         ) {
           if (!isCaption && item.text.length > MAX_BODY)
             throw new AppError('SUMMARY_CONTENT_TOO_LONG');
           if (!isCaption && !item.text.trim()) throw new AppError('SUMMARY_NO_CONTENT');
+          if (old.output_item)
+            this.store.run(
+              "UPDATE deliveries SET status='cancelled',snapshot='',error='SUMMARY_REPLACED' WHERE item_id=? AND status IN ('pending','retry_wait')",
+              old.output_item,
+            );
           this.store.run(
-            "UPDATE summaries SET status='queued',error='',input=?,origin=?,notify=?,result='',finished=NULL,token='',lease=0 WHERE id=?",
+            "UPDATE summaries SET status='queued',error='',input=?,origin=?,notify=?,result='',finished=NULL,token='',lease=0,output_item='' WHERE id=?",
             JSON.stringify(input),
             origin,
             +!!source.summary_notify,
@@ -322,10 +360,23 @@ export class SummaryService {
         id: row.id,
         status: row.status,
         error: row.error,
-        scope: row.scope,
+        scope:
+          row.material && (JSON.parse(row.material) as Caption).kind === 'transcribed'
+            ? ASR_SCOPE
+            : row.scope,
+        progress:
+          row.status === 'running'
+            ? JSON.parse(
+                this.store.get<{ value: string }>(
+                  'SELECT value FROM meta WHERE key=?',
+                  `summary-progress:${row.id}`,
+                )?.value || 'null',
+              )
+            : null,
         created: row.created,
         finished: row.finished,
         result: row.result ? (JSON.parse(row.result) as Brief) : null,
+        revision: this.resultRevision(row),
         caption: row.material
           ? (({ language, kind, hash }) => ({ language, kind, hash }))(
               JSON.parse(row.material) as Caption,
@@ -333,13 +384,102 @@ export class SummaryService {
           : null,
         current: row.stamp === this.stamp && !!this.authorized(row),
         output: row.output_item
-          ? this.store.get('SELECT status,error FROM deliveries WHERE item_id=?', row.output_item)
+          ? this.store.get(
+              'SELECT id,item_id,status,error,resolution FROM deliveries WHERE item_id=?',
+              row.output_item,
+            )
           : null,
         calls: this.store.all(
           'SELECT at,status,input_tokens,output_tokens,reserved_micro,actual_micro FROM model_calls WHERE summary_id=? ORDER BY at,rowid',
           row.id,
         ),
       }));
+  }
+  private resultRevision(row: SummaryRow) {
+    return contentHash({ title: row.id, text: row.result, scope: `${row.finished}:${row.stamp}` });
+  }
+  transcript(itemId: string) {
+    const row = this.store
+      .all<SummaryRow>(
+        "SELECT * FROM summaries WHERE item_id=? AND material<>'' ORDER BY created DESC,rowid DESC",
+        itemId,
+      )
+      .find((row) => this.authorized(row));
+    if (!row) return null;
+    const caption = JSON.parse(row.material) as Caption;
+    captionEvidence({ oneLiner: '', points: [] }, caption);
+    return { language: caption.language, kind: caption.kind, text: caption.text };
+  }
+  private queueOutput(row: SummaryRow, input: SummaryInput, result: Brief) {
+    if (
+      row.output_item &&
+      this.store.get('SELECT status FROM deliveries WHERE item_id=?', row.output_item)?.status !==
+        'cancelled'
+    )
+      return row.output_item;
+    const source = this.store.source(row.source_id);
+    const text =
+      `${input.title}${this.adapter.model === 'demo-deepseek' ? '（模拟摘要）' : ''}\n\n` +
+      result.points
+        .map((p, index) => `${index + 1}. ${p.title}\n${p.text}`)
+        .join('\n\n');
+    if (Array.from(text).length > 3900) throw new AppError('SUMMARY_PUSH_TOO_LONG');
+    const item = this.store.put(
+      {
+        key: `summary:${row.id}:${randomUUID()}`,
+        kind: 'summary',
+        title: `AI 摘要 · ${input.title}`,
+        author: 'DeepSeek',
+        text,
+        url: '',
+      },
+      [source],
+      false,
+      this.destination,
+    );
+    this.store.run(
+      'INSERT INTO deliveries(id,item_id,destination,snapshot,available,created) VALUES (?,?,?,?,?,?)',
+      randomUUID(),
+      item.id,
+      this.destination,
+      text,
+      this.store.now(),
+      this.store.now(),
+    );
+    this.store.run('UPDATE summaries SET output_item=? WHERE id=?', item.id, row.id);
+    return item.id;
+  }
+  pushLatest(itemId: string, summaryId: unknown, revision: unknown) {
+    return this.store.tx(() => {
+      const row = this.store
+        .all<SummaryRow>(
+          'SELECT * FROM summaries WHERE item_id=? ORDER BY created DESC,rowid DESC',
+          itemId,
+        )
+        .find((row) => this.authorized(row));
+      if (
+        !row ||
+        row.id !== summaryId ||
+        row.status !== 'succeeded' ||
+        !row.result ||
+        revision !== this.resultRevision(row)
+      )
+        throw new AppError('SUMMARY_PUSH_STALE', 409);
+      const original = this.store.get<Item>('SELECT * FROM items WHERE id=?', itemId)!;
+      const caption = row.material ? (JSON.parse(row.material) as Caption) : undefined;
+      const result = JSON.parse(row.result) as Brief;
+      if (caption) captionEvidence(result, caption);
+      const output = this.queueOutput(
+        row,
+        { title: original.title, text: original.text, scope: row.scope },
+        result,
+      );
+      this.store.event('summary_push_confirmed', output, row.id);
+      return this.store.get(
+        'SELECT id,item_id,status,error,resolution FROM deliveries WHERE item_id=?',
+        output,
+      )!;
+    });
   }
   async cycle(destination: string) {
     if (destination !== this.destination) throw new AppError('DESTINATION_CHANGED');
@@ -353,7 +493,12 @@ export class SummaryService {
       this.store.run(
         "UPDATE summaries SET status='running',token=?,lease=? WHERE id=?",
         token,
-        this.store.now() + (next.scope === CAPTION_SCOPE ? 300000 : 120000),
+        this.store.now() +
+          (next.scope === CAPTION_SCOPE && this.captions?.asrAvailable
+            ? 2160000
+            : next.scope === CAPTION_SCOPE
+              ? 300000
+              : 120000),
         next.id,
       );
       return { ...next, token };
@@ -373,9 +518,19 @@ export class SummaryService {
     };
     const isCaption = row.scope === CAPTION_SCOPE;
     const limits = summaryLimits(isCaption);
+    const timeoutMs = isCaption && this.captions?.asrAvailable ? 2100000 : limits.timeoutMs;
     let boundaryError: AppError | undefined;
     const controller = new AbortController(),
-      timeout = setTimeout(() => controller.abort(), limits.timeoutMs);
+      timeout = setTimeout(() => controller.abort(), timeoutMs);
+    this.controller = controller;
+    const progress = (stage: string, percent = 0) => {
+      active();
+      this.store.run(
+        'INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        `summary-progress:${row.id}`,
+        JSON.stringify({ stage, percent }),
+      );
+    };
     const revoke = setInterval(() => {
       try {
         active();
@@ -482,13 +637,14 @@ export class SummaryService {
       const input = JSON.parse(row.input) as SummaryInput;
       let caption: Caption | undefined;
       if (isCaption) {
+        progress('captions');
         if (!this.captions?.available) throw new AppError('YOUTUBE_RUNTIME_UNAVAILABLE');
         const item = this.store.get<Item>('SELECT * FROM items WHERE id=?', row.item_id)!;
         const videoId = item.key.match(/^youtube:([a-zA-Z0-9_-]{11})$/)?.[1];
         if (!videoId) throw new AppError('YOUTUBE_INVALID_VIDEO_ID');
         caption = row.material
           ? (JSON.parse(row.material) as Caption)
-          : await this.captions.fetch(videoId, controller.signal);
+          : await this.captions.fetch(videoId, controller.signal, progress);
         active();
         if (caption.videoId !== videoId) throw new AppError('YOUTUBE_CAPTION_CACHE_INVALID');
         captionEvidence({ oneLiner: '', points: [] }, caption);
@@ -500,7 +656,9 @@ export class SummaryService {
         );
         input.text = caption.text;
         input.captions = true;
+        if (caption.kind === 'transcribed') input.scope = ASR_SCOPE;
       }
+      progress('summarizing');
       let result = validateBrief(
         await this.adapter.run(input, request, controller.signal),
         input.text,
@@ -511,45 +669,7 @@ export class SummaryService {
         const source = this.store.source(row.source_id);
         let output = '';
         if (row.notify && source.summary_notify && source.notify) {
-          const original = this.store.get<Item>('SELECT * FROM items WHERE id=?', row.item_id)!;
-          const main =
-            `AI 摘要${this.adapter.model === 'demo-sift' ? '（模拟）' : ''} · ${input.scope}\n${input.title}\n${caption ? `${caption.language} · ${caption.kind === 'automatic' ? '自动字幕' : '平台人工字幕轨道'}\n` : ''}\n${result.oneLiner}\n\n` +
-            result.points
-              .map(
-                (p) =>
-                  `${p.title}：${p.text}\n原文引用：${p.quote}${p.url ? `\n${p.locator} ${p.url}` : ''}`,
-              )
-              .join('\n\n');
-          const tail = `\n\n仅供参考，请核对原文。\n`;
-          const text =
-            main +
-            tail +
-            (Array.from(main + tail + original.url).length < 3900 && original.url
-              ? original.url
-              : '请在 FeedRelay 或邮箱查看原文');
-          const item = this.store.put(
-            {
-              key: `summary:${row.id}:${randomUUID()}`,
-              kind: 'summary',
-              title: `AI 摘要 · ${input.title}`,
-              author: 'Sift',
-              text,
-              url: '',
-            },
-            [source],
-            false,
-            destination,
-          );
-          output = item.id;
-          this.store.run(
-            'INSERT INTO deliveries(id,item_id,destination,snapshot,available,created) VALUES (?,?,?,?,?,?)',
-            randomUUID(),
-            item.id,
-            destination,
-            text,
-            this.store.now(),
-            this.store.now(),
-          );
+          output = this.queueOutput(row, input, result);
         }
         this.store.run(
           "UPDATE summaries SET status='succeeded',result=?,input='',finished=?,token='',lease=0,output_item=? WHERE id=?",
@@ -562,12 +682,15 @@ export class SummaryService {
     } catch (error) {
       this.store.run(
         "UPDATE summaries SET status='failed',error=?,input='',finished=?,token='',lease=0 WHERE id=? AND status='running' AND token=?",
-        boundaryError?.code || (error instanceof AppError ? error.code : 'SIFT_SUMMARY_FAILED'),
+        boundaryError?.code ||
+          (error instanceof AppError ? error.code : 'SUMMARY_GENERATION_FAILED'),
         this.store.now(),
         row.id,
         row.token,
       );
     } finally {
+      this.controller = undefined;
+      this.store.run('DELETE FROM meta WHERE key=?', `summary-progress:${row.id}`);
       clearTimeout(timeout);
       clearInterval(revoke);
     }

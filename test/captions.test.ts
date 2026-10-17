@@ -16,7 +16,7 @@ import {
   createCaptionAdapter,
 } from '../server/captions.js';
 import { type SummaryRow } from '../server/summary.js';
-import { MODEL_ENDPOINT, type SummaryInput } from '../server/sift.js';
+import { MODEL_ENDPOINT, type SummaryInput } from '../server/deepseek.js';
 import { Store } from '../server/store.js';
 
 const id = 'abcdefghijk';
@@ -57,7 +57,7 @@ const modelCall = (request: typeof fetch, signal: AbortSignal) =>
   request(MODEL_ENDPOINT, {
     method: 'POST',
     signal,
-    body: JSON.stringify({ model: 'demo-sift', max_tokens: 2600 }),
+    body: JSON.stringify({ model: 'demo-deepseek', max_tokens: 2600 }),
   });
 
 test('YT-I01: captions remain optional, strict proxy config and disabled runtime do not affect feeds', async (t) => {
@@ -204,7 +204,8 @@ test('YT-I03: durable caption task, cache and timestamped supplement share the o
     'SELECT snapshot FROM deliveries WHERE item_id=?',
     saved.output_item,
   )!.snapshot;
-  assert.match(message, /t=10s/);
+  assert.match(message, /1\. 原文要点/);
+  assert.doesNotMatch(message, /t=10s|原文引用/);
   assert.match(message, /字幕/);
   assert.equal(
     f.store.get('SELECT status FROM deliveries WHERE item_id=?', f.item.id)!.status,
@@ -273,7 +274,7 @@ test('YT-I04: no captions/network failure consumes no model budget and original 
   }
 });
 
-test('YT-I05: long captions use bounded Sift workflow and every chunk/merge/repair shares persistent budget', async (t) => {
+test('YT-I05: long captions use bounded DeepSeek workflow and every chunk/merge/repair shares persistent budget', async (t) => {
   const f = setup(t);
   f.service.captions!.fetch = async () =>
     parseCaption(raw('较长字幕需要完整分块。'.repeat(1000)), id);
@@ -392,13 +393,13 @@ test('YT-I08: subprocess isolates environment, enforces output/timeout/cancellat
   });
   if (runtime.status !== 0) return t.skip('local Python unavailable');
   const python = runtime.stdout.trim();
-  const previousKey = process.env.SIFT_API_KEY,
+  const previousKey = process.env.DEEPSEEK_API_KEY,
     previousProxy = process.env.HTTP_PROXY;
-  process.env.SIFT_API_KEY = 'synthetic-secret-must-not-leak';
+  process.env.DEEPSEEK_API_KEY = 'synthetic-secret-must-not-leak';
   process.env.HTTP_PROXY = 'http://synthetic.invalid:9999';
   t.after(() => {
-    if (previousKey === undefined) delete process.env.SIFT_API_KEY;
-    else process.env.SIFT_API_KEY = previousKey;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
     if (previousProxy === undefined) delete process.env.HTTP_PROXY;
     else process.env.HTTP_PROXY = previousProxy;
   });
@@ -408,7 +409,7 @@ test('YT-I08: subprocess isolates environment, enforces output/timeout/cancellat
   assert.equal(contract.status, 0, contract.stderr);
   writeFileSync(
     helper,
-    'import json, os, sys\nr=json.load(sys.stdin)\nprint(json.dumps({"id":r["id"],"secret":os.environ.get("SIFT_API_KEY"),"proxy":os.environ.get("HTTP_PROXY")}))\n',
+    'import json, os, sys\nr=json.load(sys.stdin)\nprint(json.dumps({"id":r["id"],"secret":os.environ.get("DEEPSEEK_API_KEY"),"proxy":os.environ.get("HTTP_PROXY")}))\n',
   );
   const response = (await captionProcess(
     python,

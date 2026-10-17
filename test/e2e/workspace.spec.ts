@@ -10,17 +10,17 @@ test('desktop: browse, resolve uncertainty, manage source and settings', async (
   await expect(page.getByRole('heading', { name: '最新更新', exact: true })).toBeVisible();
   await expect(page.getByText('Agent 的边界：把不确定的决策放进确定的流程')).toBeVisible();
   await page.screenshot({ path: info.outputPath('desktop-updates.png'), fullPage: true });
-  await page.getByRole('button', { name: '为什么幂等不是加一个重试按钮', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '内容详情' })).toBeVisible();
+  await page.getByRole('link', { name: '为什么幂等不是加一个重试按钮', exact: true }).click();
+  await expect(page.getByRole('region', { name: '内容详情' })).toBeVisible();
   await page.getByRole('button', { name: '已核查', exact: true }).click();
   await page
     .getByRole('dialog', { name: '标记为已人工核查？' })
     .getByRole('button', { name: '确认', exact: true })
     .click();
   await expect(
-    page.getByRole('dialog', { name: '内容详情' }).getByText('已人工核查', { exact: true }),
+    page.getByRole('region', { name: '内容详情' }).getByText('已人工核查', { exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: '关闭详情' }).click();
+  await page.getByRole('button', { name: '返回列表' }).click();
   await page
     .getByRole('navigation')
     .getByRole('button', { name: /订阅源/ })
@@ -60,10 +60,13 @@ test('mobile: no overflow, details and source modal remain usable', async ({ pag
   await expect(page.getByRole('heading', { name: '最新更新', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('mobile-updates.png'), fullPage: true });
-  await page.getByRole('button', { name: '查看详情' }).first().click();
-  await expect(page.getByRole('dialog', { name: '内容详情' })).toBeVisible();
+  await page
+    .getByRole('link', { name: /^查看详情：/ })
+    .first()
+    .click();
+  await expect(page.getByRole('region', { name: '内容详情' })).toBeVisible();
   await page.screenshot({ path: info.outputPath('mobile-detail.png'), fullPage: true });
-  await page.getByRole('button', { name: '关闭详情' }).click();
+  await page.getByRole('button', { name: '返回列表' }).click();
   await page
     .getByRole('navigation')
     .getByRole('button', { name: /订阅源/ })

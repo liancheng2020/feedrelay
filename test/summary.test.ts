@@ -9,8 +9,8 @@ import {
   MODEL_ENDPOINT,
   validateBrief,
   boundedModelFetch,
-  createSiftAdapter,
-} from '../server/sift.js';
+  createDeepSeekAdapter,
+} from '../server/deepseek.js';
 
 const result = (text = '会议于2026年10月16日召开，计划于11月发布。') => ({
   summary: {
@@ -48,7 +48,7 @@ const call = (request: typeof fetch, signal: AbortSignal) =>
   request(MODEL_ENDPOINT, {
     method: 'POST',
     body: JSON.stringify({
-      model: 'demo-sift',
+      model: 'demo-deepseek',
       messages: [{ role: 'user', content: '测试' }],
       max_tokens: 2600,
     }),
@@ -222,7 +222,7 @@ test('AI follow-up has an independent frozen delivery and send retry never calls
   assert.ok(row.output_item);
   const output = f.store.get('SELECT * FROM deliveries WHERE item_id=?', row.output_item)!;
   assert.equal(output.mode, 'immediate');
-  assert.match(String(output.snapshot), /AI 摘要（模拟）/);
+  assert.match(String(output.snapshot), /^测试标题（模拟摘要）\n\n1\. /);
   f.store.run("UPDATE deliveries SET status='sent' WHERE item_id=?", item.id);
   const delivery = f.store.claimDelivery('demo')!;
   f.store.finishDelivery(delivery, { status: 'unknown' });
@@ -343,7 +343,7 @@ test('adapter cannot bypass the fixed endpoint or output token cap', async (t) =
     run: async (_input, request) => {
       await request(MODEL_ENDPOINT, {
         method: 'POST',
-        body: JSON.stringify({ model: 'demo-sift', max_tokens: 2601 }),
+        body: JSON.stringify({ model: 'demo-deepseek', max_tokens: 2601 }),
       });
       return result();
     },
@@ -353,18 +353,17 @@ test('adapter cannot bypass the fixed endpoint or output token cap', async (t) =
   assert.equal(f.service.list(item.id)[0].error, 'SUMMARY_REQUEST_BLOCKED');
   assert.equal(f.service.describe().calls, 0);
 });
-test('missing optional local module degrades to unavailable without breaking original subscriptions', (t) => {
+test('missing optional model key degrades to unavailable without breaking original subscriptions', (t) => {
   const f = fixture(t);
   f.config.demo = false;
-  f.config.sift = {
+  f.config.deepseek = {
     enabled: true,
-    dir: join(f.dir, 'missing'),
-    apiKey: 'synthetic',
+    apiKey: '',
     model: 'test',
     inputPrice: 1,
     outputPrice: 2,
   };
-  assert.equal(createSiftAdapter(f.config).available, false);
+  assert.equal(createDeepSeekAdapter(f.config).available, false);
 });
 test('v3 backup restores usage but disables model consent and clears supplemental snapshots', async (t) => {
   const f = setup(t, 'manual', true),

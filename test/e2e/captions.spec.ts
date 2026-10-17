@@ -38,17 +38,17 @@ test('captions: explicit scope confirmation, grounded timestamp links, revocatio
   await page.screenshot({ path: info.outputPath('desktop-caption-source.png'), fullPage: true });
   await page.getByRole('navigation').getByRole('button', { name: '最新更新', exact: true }).click();
   await page
-    .getByRole('button', { name: 'Agent 的边界：把不确定的决策放进确定的流程', exact: true })
+    .getByRole('link', { name: 'Agent 的边界：把不确定的决策放进确定的流程', exact: true })
     .click();
-  const detail = page.getByRole('dialog', { name: '内容详情' });
+  const detail = page.getByRole('region', { name: '内容详情' });
   await detail.getByRole('button', { name: '生成摘要', exact: true }).click();
   await page
     .getByRole('dialog', { name: '生成当前内容摘要？', exact: true })
     .getByRole('button', { name: '确认', exact: true })
     .click();
-  await expect(detail.locator('.item-summary')).toContainText('已生成', { timeout: 15000 });
-  await expect(detail.locator('.item-summary')).toContainText('不含画面');
-  await expect(detail.getByRole('link', { name: '[00:10] 查看视频' })).toHaveAttribute(
+  await expect(detail.locator('.reading-summary')).toContainText('已生成', { timeout: 15000 });
+  await expect(detail.locator('.reading-summary')).toContainText('不含画面');
+  await expect(detail.getByRole('link', { name: '[00:10] 查看原文' })).toHaveAttribute(
     'href',
     /&t=10s$/,
   );
@@ -56,7 +56,7 @@ test('captions: explicit scope confirmation, grounded timestamp links, revocatio
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('mobile-caption-summary.png'), fullPage: true });
-  await page.getByRole('button', { name: '关闭详情' }).click();
+  await page.getByRole('button', { name: '返回列表' }).click();
   await page
     .getByRole('navigation')
     .getByRole('button', { name: /订阅源/ })

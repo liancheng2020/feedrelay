@@ -39,27 +39,29 @@ test('v0.3 desktop: opt-in budget, source disclosure, cached summary and indepen
     '摘要仅在详情页查看',
   );
   await confirm(page, '授权此来源摘要？');
+  await row.getByLabel('摘要正文', { exact: true }).selectOption('captions');
+  await confirm(page, '授权此来源摘要？');
   await row.getByLabel('私聊追加AI补充').click();
   await confirm(page, '授权此来源摘要？');
   await expect(row.getByLabel('私聊追加AI补充')).toBeChecked();
   await page.getByRole('navigation').getByRole('button', { name: '最新更新' }).click();
   await page
-    .getByRole('button', { name: 'Agent 的边界：把不确定的决策放进确定的流程', exact: true })
+    .getByRole('link', { name: 'Agent 的边界：把不确定的决策放进确定的流程', exact: true })
     .click();
-  const detail = page.getByRole('dialog', { name: '内容详情' });
+  const detail = page.getByRole('region', { name: '内容详情' });
   await detail.getByRole('button', { name: '生成摘要', exact: true }).click();
   await confirm(page, '生成当前内容摘要？');
-  await expect(detail.locator('.item-summary')).toContainText('已生成', { timeout: 15000 });
-  await expect(detail.locator('.summary-point blockquote')).toContainText('本条为合成演示内容');
-  await expect(detail.locator('.item-summary')).toContainText('1 次模型请求');
-  await expect(detail.locator('.item-summary')).toContainText(/AI补充投递：\s*已接受/, {
+  await expect(detail.locator('.reading-summary')).toContainText('已生成', { timeout: 15000 });
+  await expect(detail.locator('.summary-points blockquote')).toContainText('合成字幕：');
+  await expect(detail.locator('.reading-summary')).toContainText('1 次请求');
+  await expect(detail.locator('.reading-summary')).toContainText('接口已接受', {
     timeout: 15000,
   });
   await page.screenshot({ path: info.outputPath('desktop-item-summary.png'), fullPage: true });
   await detail.getByRole('button', { name: '生成摘要', exact: true }).click();
   await confirm(page, '生成当前内容摘要？');
-  await expect(detail.locator('.item-summary')).toContainText('1 次模型请求');
-  await page.getByRole('button', { name: '关闭详情' }).click();
+  await expect(detail.locator('.reading-summary')).toContainText('1 次请求');
+  await page.getByRole('button', { name: '返回列表' }).click();
   expect(errors).toEqual([]);
 });
 test('v0.3 mobile: summary content and budget fit, disabling revokes source consent', async ({
@@ -89,18 +91,16 @@ test('v0.3 mobile: summary content and budget fit, disabling revokes source cons
     ).ok(),
   ).toBe(true);
   await page.reload();
+  await page.getByRole('link', { name: '从需求到上线：一个小工具的工程取舍', exact: true }).click();
   await page
-    .getByRole('button', { name: '从需求到上线：一个小工具的工程取舍', exact: true })
-    .click();
-  await page
-    .getByRole('dialog', { name: '内容详情' })
+    .getByRole('region', { name: '内容详情' })
     .getByRole('button', { name: '生成摘要', exact: true })
     .click();
   await confirm(page, '生成当前内容摘要？');
-  await expect(page.locator('.item-summary')).toContainText('已生成', { timeout: 15000 });
+  await expect(page.locator('.reading-summary')).toContainText('已生成', { timeout: 15000 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('mobile-item-summary.png'), fullPage: true });
-  await page.getByRole('button', { name: '关闭详情' }).click();
+  await page.getByRole('button', { name: '返回列表' }).click();
   await page.getByRole('navigation').getByRole('button', { name: '投递设置' }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('mobile-summary-budget.png'), fullPage: true });

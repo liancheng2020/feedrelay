@@ -17,6 +17,7 @@ export interface SummaryConfig {
   stamp: string;
   currentStamp: string;
   captionsReady: boolean;
+  asrReady?: boolean;
 }
 const props = defineProps<{ value: SummaryConfig; busy: boolean; demo: boolean }>();
 const emit = defineEmits<{
@@ -52,7 +53,7 @@ watch(
     "
   >
     <h2>
-      Sift 摘要
+      DeepSeek 摘要
       <span class="badge" :class="value.enabled ? 'sent' : 'cancelled'">{{
         value.enabled ? '已启用' : '默认关闭'
       }}</span>
@@ -67,9 +68,16 @@ watch(
     <p class="muted">
       YouTube 字幕：{{
         value.captionsReady ? '可选择，仍需逐频道授权' : '未启用，简介订阅不受影响'
-      }}。字幕任务最多12次请求与4分钟；简介、邮件及RSS仍最多2次与60秒，均占用累计预算。
+      }}。{{
+        value.asrReady
+          ? '本地转写已就绪：无字幕时读取公开音频并在本机转写，最长60分钟视频、35分钟任务。'
+          : '本地转写未启用。字幕任务最长4分钟。'
+      }}
+      视频摘要最多12次模型请求；简介、邮件及RSS仍最多2次与60秒，均占用累计预算。
     </p>
-    <p v-if="!value.ready" class="alert">尚未配置 SIFT_ENABLED、可信 SIFT_DIR、独立 Key 与价格。</p>
+    <p v-if="!value.ready" class="alert">
+      尚未配置 DEEPSEEK_ENABLED、DEEPSEEK_API_KEY 与模型价格。
+    </p>
     <p v-else-if="value.enabled && value.stamp !== value.currentStamp" class="alert">
       配置版本已变化，请重新确认预算与来源授权。
     </p>
@@ -103,7 +111,7 @@ watch(
         type="number"
         min="0"
         max="10000"
-        step="0.01"
+        step="0.000001"
         required
     /></label>
     <p class="section-note">

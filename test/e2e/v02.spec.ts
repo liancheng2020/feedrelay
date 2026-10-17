@@ -16,10 +16,10 @@ test('v0.2 desktop: digest parts, confirmed mode change and portable config', as
   await expect(page.locator('.digest-list article').first()).toBeVisible();
   await page.screenshot({ path: info.outputPath('desktop-digests.png'), fullPage: true });
   await page.getByRole('button', { name: '查看分片' }).first().click();
-  await expect(page.getByRole('dialog', { name: '内容详情' })).toContainText(
+  await expect(page.getByRole('region', { name: '内容详情' })).toContainText(
     '原文预览，非 AI 摘要',
   );
-  await page.getByRole('button', { name: '关闭详情' }).click();
+  await page.getByRole('button', { name: '返回列表' }).click();
   await page
     .getByRole('navigation')
     .getByRole('button', { name: /订阅源/ })
@@ -44,13 +44,11 @@ test('v0.2 desktop: digest parts, confirmed mode change and portable config', as
       },
     ],
   };
-  await dialog
-    .getByLabel('选择 JSON 配置')
-    .setInputFiles({
-      name: 'sources.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(config)),
-    });
+  await dialog.getByLabel('选择 JSON 配置').setInputFiles({
+    name: 'sources.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(config)),
+  });
   await dialog.getByRole('button', { name: '预览配置' }).click();
   await expect(dialog).toContainText('新增 1 项');
   await page.screenshot({ path: info.outputPath('desktop-import.png'), fullPage: true });
