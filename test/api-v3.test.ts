@@ -59,6 +59,17 @@ test('v3 API requires login and separate budget, source and item consent; never 
     200,
   );
   assert.equal((await call(`/items/${item.id}/summary`, 'POST', {})).status, 400);
+  assert.equal(
+    (
+      await call(`/sources/${s.id}/summary`, 'POST', {
+        mode: 'manual',
+        notify: false,
+        content: 'captions',
+        confirmed: true,
+      })
+    ).status,
+    400,
+  );
   assert.equal((await call(`/items/${item.id}/summary`, 'POST', { confirmed: true })).status, 202);
   await f.engine.summaries.cycle('demo');
   const detail = await (await call(`/items/${item.id}`)).json();
@@ -67,6 +78,7 @@ test('v3 API requires login and separate budget, source and item consent; never 
   assert.equal((await (await call('/items')).json()).total, 1);
   const exported = await (await call('/sources/export')).json();
   assert.equal(exported.sources[0].summary_mode, undefined);
+  assert.equal(exported.sources[0].summary_content, undefined);
   const settings = await (await call('/summaries/settings')).json();
   assert.equal(settings.calls, 1);
   assert.equal(settings.apiKey, undefined);

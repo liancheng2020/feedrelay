@@ -54,3 +54,19 @@ export function migrateV3(db: DatabaseSync) {
     throw error;
   }
 }
+
+export function migrateV4(db: DatabaseSync) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (Number(db.prepare('PRAGMA user_version').get()!.user_version) < 4)
+      db.exec(`
+        ALTER TABLE sources ADD COLUMN summary_content TEXT NOT NULL DEFAULT 'feed';
+        ALTER TABLE summaries ADD COLUMN material TEXT NOT NULL DEFAULT '';
+        PRAGMA user_version=4;
+      `);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}

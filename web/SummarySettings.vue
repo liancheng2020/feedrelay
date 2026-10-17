@@ -16,6 +16,7 @@ export interface SummaryConfig {
   outputPrice: number;
   stamp: string;
   currentStamp: string;
+  captionsReady: boolean;
 }
 const props = defineProps<{ value: SummaryConfig; busy: boolean; demo: boolean }>();
 const emit = defineEmits<{
@@ -62,6 +63,11 @@ watch(
           ? '模拟模型，不产生外部请求或真实费用。'
           : `${value.model} · ${value.destination}。仅处理已授权来源，原始提醒不等待摘要。`
       }}
+    </p>
+    <p class="muted">
+      YouTube 字幕：{{
+        value.captionsReady ? '可选择，仍需逐频道授权' : '未启用，简介订阅不受影响'
+      }}。字幕任务最多12次请求与4分钟；简介、邮件及RSS仍最多2次与60秒，均占用累计预算。
     </p>
     <p v-if="!value.ready" class="alert">尚未配置 SIFT_ENABLED、可信 SIFT_DIR、独立 Key 与价格。</p>
     <p v-else-if="value.enabled && value.stamp !== value.currentStamp" class="alert">

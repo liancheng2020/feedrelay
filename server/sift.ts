@@ -7,12 +7,13 @@ import { AppError, type Config } from './config.js';
 export const MODEL_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 export interface Brief {
   oneLiner: string;
-  points: { title: string; text: string; quote: string; locator: string }[];
+  points: { title: string; text: string; quote: string; locator: string; url?: string }[];
 }
 export interface SummaryInput {
   title: string;
   text: string;
   scope: string;
+  captions?: boolean;
 }
 export interface SiftAdapter {
   stamp: string;
@@ -25,7 +26,11 @@ export interface SiftAdapter {
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const contentHash = (input: SummaryInput) => digest(JSON.stringify(input));
-export const normalizeQuote = (s: string) => s.replace(/\s+/gu, ' ').trim();
+export const normalizeQuote = (s: string) => s.normalize('NFC').replace(/\s+/gu, ' ').trim();
+export const summaryLimits = (captions = false) =>
+  captions
+    ? { maxCalls: 12, timeoutMs: 240000, chunkLength: 12000 }
+    : { maxCalls: 2, timeoutMs: 60000, chunkLength: 20000 };
 const object = (value: unknown) => {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new AppError('SUMMARY_INVALID_OUTPUT');
@@ -109,11 +114,12 @@ export function createSiftAdapter(config: Config): SiftAdapter {
           }),
           signal,
         });
-        const quote = input.text
+        const first = input.text
           .trim()
           .split(/\n/u)
-          .find((s) => s.trim())!
-          .slice(0, 120);
+          .find((s) => s.trim())!;
+        const marker = input.captions ? first.match(/^\[([\d:]+)\]\s*/) : null;
+        const quote = first.slice(marker?.[0].length || 0).slice(0, 120);
         return {
           summary: {
             overview: { oneLiner: '模拟摘要：仅展示提供内容中的信息。' },
@@ -121,7 +127,7 @@ export function createSiftAdapter(config: Config): SiftAdapter {
               {
                 title: '原文要点（模拟）',
                 summary: quote,
-                evidence: { quote, locator: '原文首段' },
+                evidence: { quote, locator: marker ? `[${marker[1]}]` : '原文首段' },
               },
             ],
           },
@@ -145,10 +151,8 @@ export function createSiftAdapter(config: Config): SiftAdapter {
           },
           fetchImpl: request,
           signal,
-          timeoutMs: 60000,
-          maxCalls: 2,
+          ...summaryLimits(input.captions),
           repairs: 1,
-          chunkLength: 20000,
         },
       );
     },

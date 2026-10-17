@@ -1,9 +1,12 @@
 services:
   web:
-    build: .
+    build:
+      context: .
+      args:
+        YOUTUBE_CAPTIONS: ${YOUTUBE_CAPTIONS_BUILD:-0}
     init: true
     restart: unless-stopped
-    stop_grace_period: 60s
+    stop_grace_period: 300s
     env_file: .env
     environment:
       HOST: 0.0.0.0
@@ -13,10 +16,13 @@ services:
     ports: ['127.0.0.1:8787:8787']
     volumes: ['state:/app/data']
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        YOUTUBE_CAPTIONS: ${YOUTUBE_CAPTIONS_BUILD:-0}
     init: true
     restart: unless-stopped
-    stop_grace_period: 60s
+    stop_grace_period: 300s
     command: ['npm', 'run', 'worker']
     env_file: .env
     environment:

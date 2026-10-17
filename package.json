@@ -16,7 +16,8 @@
     "setup": "node scripts/setup.mjs",
     "backup": "node dist/scripts/backup.js",
     "restore": "node dist/scripts/restore.js",
-    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts test/*.test.mjs",
+    "probe:youtube": "node scripts/yt-dlp-probe.mjs",
     "test:e2e": "playwright test",
     "check": "npm run typecheck && npm test && npm run build"
   },

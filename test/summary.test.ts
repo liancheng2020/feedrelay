@@ -133,7 +133,13 @@ test('two database connections cannot exceed the shared call budget', async (t) 
   f.service.enqueue(b.id);
   const second = new Store(f.dir, 'demo', f.now);
   t.after(() => second.close());
-  const other = new SummaryService(second, f.service.adapter, 'demo', f.service.transport);
+  const other = new SummaryService(
+    second,
+    f.service.adapter,
+    'demo',
+    f.service.transport,
+    f.service.captions,
+  );
   await Promise.all([f.service.cycle('demo'), other.cycle('demo')]);
   assert.equal(f.service.describe().calls, 1);
   assert.equal(f.store.get("SELECT count(*) n FROM summaries WHERE status='succeeded'")!.n, 1);
@@ -260,7 +266,13 @@ test('restart leaves expired in-flight work unknown rather than regenerating it'
     id,
   );
   f.advance(101);
-  const restarted = new SummaryService(f.store, f.service.adapter, 'demo', f.service.transport);
+  const restarted = new SummaryService(
+    f.store,
+    f.service.adapter,
+    'demo',
+    f.service.transport,
+    f.service.captions,
+  );
   await restarted.cycle('demo');
   assert.equal(restarted.list(item.id)[0].status, 'unknown');
   assert.equal(restarted.describe().calls, 0);
@@ -384,7 +396,13 @@ test('v3 backup restores usage but disables model consent and clears supplementa
   assert.equal(restore.status, 0, restore.stderr);
   const db = new Store(target, 'demo', f.now);
   t.after(() => db.close());
-  const service = new SummaryService(db, f.service.adapter, 'demo', f.service.transport);
+  const service = new SummaryService(
+    db,
+    f.service.adapter,
+    'demo',
+    f.service.transport,
+    f.service.captions,
+  );
   assert.equal(service.describe().enabled, false);
   assert.equal(service.describe().calls, 1);
   assert.equal(db.source(f.s.id).summary_mode, 'off');

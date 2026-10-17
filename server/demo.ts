@@ -44,7 +44,7 @@ export function seedDemo(store: Store) {
       email = source.type === 'email';
     const item = store.put(
       {
-        key: 'demo:seed:' + index,
+        key: email ? 'demo:seed:' + index : `youtube:s${String(index).padStart(10, '0')}`,
         kind: email ? 'email' : 'youtube',
         title,
         author: source.name,

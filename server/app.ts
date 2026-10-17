@@ -211,8 +211,19 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     ctx.body = engine.summaries.configure(ctx.request.body);
   });
   router.post('/api/sources/:id/summary', (ctx) => {
-    const b = ctx.request.body as { mode?: unknown; notify?: unknown; confirmed?: unknown };
-    ctx.body = engine.summaries.authorize(String(ctx.params.id), b.mode, b.notify, b.confirmed);
+    const b = ctx.request.body as {
+      mode?: unknown;
+      notify?: unknown;
+      confirmed?: unknown;
+      content?: unknown;
+    };
+    ctx.body = engine.summaries.authorize(
+      String(ctx.params.id),
+      b.mode,
+      b.notify,
+      b.confirmed,
+      b.content,
+    );
   });
   router.post('/api/items/:id/summary', (ctx) => {
     const b = ctx.request.body as { confirmed?: boolean; retry?: boolean };

@@ -40,6 +40,7 @@ interface Source {
   delivery_mode: string;
   summary_mode: string;
   summary_notify: number;
+  summary_content: 'feed' | 'captions';
   enabled: number;
   notify: number;
   initialized: number;
@@ -444,21 +445,51 @@ async function inspectPart(id: string) {
     detail.value = await api<Detail>(`/items/${id}`);
   });
 }
-function changeSummary(s: Source, event: Event, push = false) {
+function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'content' = 'mode') {
   const target = event.target as HTMLSelectElement | HTMLInputElement;
-  const mode = push ? s.summary_mode : target.value;
-  const notify = push ? (target as HTMLInputElement).checked : !!s.summary_notify;
+  const mode = field === 'mode' ? target.value : s.summary_mode;
+  const notify = field === 'notify' ? (target as HTMLInputElement).checked : !!s.summary_notify;
+  const content = field === 'content' ? target.value : s.summary_content;
   const recipient = overview.value?.connections.recipient || '未配置';
-  if (push) (target as HTMLInputElement).checked = !!s.summary_notify;
-  else target.value = s.summary_mode;
+  const disclosure =
+    s.type === 'youtube'
+      ? content === 'captions'
+        ? '从 YouTube 获取的公开字幕（非画面）'
+        : '已采集视频简介（不是字幕或全文）'
+      : s.type === 'rss'
+        ? '已采集Feed文本（不代表网页全文）'
+        : '已采集邮件正文（不含附件）';
+  if (field === 'notify') (target as HTMLInputElement).checked = !!s.summary_notify;
+  else target.value = field === 'content' ? s.summary_content : s.summary_mode;
   confirmation.value = {
-    title: mode === 'off' ? '关闭此来源摘要？' : '授权此来源摘要？',
+    title:
+      field === 'content' && mode === 'off'
+        ? '修改摘要正文？'
+        : mode === 'off'
+          ? '关闭此来源摘要？'
+          : '授权此来源摘要？',
     text:
-      mode === 'off'
-        ? '将取消排队摘要、清理结果及未发AI补充。已发出的外部请求或消息无法撤回。'
-        : `${demo.value ? '本环境为模拟，不连接外部服务。' : `已采集${s.type === 'youtube' ? '视频简介（不是字幕或全文）' : s.type === 'rss' ? 'Feed文本（不代表网页全文）' : '邮件正文（不含附件）'}将发送到 DeepSeek。`} ${mode === 'auto' ? '只自动处理授权后新发现且已排队提醒的条目，不处理历史收件箱。' : '仅在你确认具体条目后处理。'} ${notify ? `另行即时私聊发送AI补充，独立于原即时/日报，不会重发原通知。接收人：${recipient}。` : '摘要仅在详情页查看，不向飞书追加消息。'} 失败、修复和重试均占用累计预算；引用校验不保证语义正确。`,
+      field === 'content' && mode === 'off'
+        ? `仅保存${content === 'captions' ? '字幕' : '简介'}选择，不开启摘要或外部请求。启用时仍需确认授权。`
+        : mode === 'off'
+          ? '将取消排队摘要、清理结果及未发AI补充。已发出的外部请求或消息无法撤回。'
+          : [
+              demo.value ? '本环境为模拟，不连接外部服务。' : `${disclosure}将发送到 DeepSeek。`,
+              content === 'captions'
+                ? '仅取字幕，不读取Cookie、不下载音视频；最多48000码元、12次模型请求、4分钟，包含分块、合并与修复；失败不自动改用简介生成视频摘要。'
+                : '',
+              mode === 'auto'
+                ? '只自动处理授权后新发现且已排队提醒的条目，不处理历史收件箱。'
+                : '仅在你确认具体条目后处理。',
+              notify
+                ? `另行即时私聊发送AI补充，独立于原即时/日报，不会重发原通知。接收人：${recipient}。`
+                : '摘要仅在详情页查看，不向飞书追加消息。',
+              '切换正文范围使旧结果失效。失败、修复和重试均占用累计预算；引用校验不保证语义正确。',
+            ]
+              .filter(Boolean)
+              .join(' '),
     run: async () => {
-      await api(`/sources/${s.id}/summary`, 'POST', { mode, notify, confirmed: true });
+      await api(`/sources/${s.id}/summary`, 'POST', { mode, notify, content, confirmed: true });
     },
   };
 }
@@ -467,7 +498,7 @@ function generateSummary(retry: boolean) {
   if (!id) return;
   confirmation.value = {
     title: retry ? '重新处理摘要？' : '生成当前内容摘要？',
-    text: `${demo.value ? '本次为模拟处理。' : '当前已采集文本将发送至 DeepSeek。'} 相同有效内容复用缓存；失败或中断后的重做可能再次计费，所有请求受累计预算限制。原始提醒不会重发。`,
+    text: `${demo.value ? '本次为模拟处理。' : '按已授权来源范围处理：简介/邮件/Feed文本，或另行获取公开字幕后发送至 DeepSeek；字幕不包含画面理解。'} 相同有效内容复用缓存；失败或中断后的重做可能再次计费，所有请求受累计预算限制。原始提醒不会重发。`,
     run: async () => {
       await api(`/items/${id}/summary`, 'POST', { confirmed: true, retry });
     },
@@ -796,7 +827,7 @@ onUnmounted(() => {
           <button @click="transfer = 'import'"><Upload :size="16" />导入配置</button
           ><button @click="transfer = 'export'"><Download :size="16" />导出配置</button>
         </div>
-        <p class="section-note">先添加、检查，再启用。YouTube 只订阅视频标题与简介，不提取字幕。</p>
+        <p class="section-note">频道通知使用标题与简介；字幕摘要需另外启用组件并授权。</p>
         <div v-if="!sources.length" class="empty">
           <Rss :size="34" />
           <h2>添加第一个订阅源</h2>
@@ -845,12 +876,25 @@ onUnmounted(() => {
                     <option value="auto">自动 · 仅后续更新</option>
                   </select></label
                 >
+                <label v-if="s.type === 'youtube'" class="mode-picker"
+                  >摘要正文<select
+                    aria-label="摘要正文"
+                    :value="s.summary_content"
+                    :disabled="busy"
+                    @change="changeSummary(s, $event, 'content')"
+                  >
+                    <option value="feed">视频简介</option>
+                    <option value="captions" :disabled="!summaryConfig?.captionsReady">
+                      视频字幕 · 不含画面
+                    </option>
+                  </select></label
+                >
                 <label v-if="s.summary_mode !== 'off'" class="check"
                   ><input
                     type="checkbox"
                     :checked="!!s.summary_notify"
                     :disabled="busy"
-                    @change="changeSummary(s, $event, true)"
+                    @change="changeSummary(s, $event, 'notify')"
                   />私聊追加AI补充</label
                 >
               </div>

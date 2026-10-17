@@ -15,6 +15,7 @@ import { fetchRss } from './rss.js';
 import { freezeDigest } from './digest.js';
 import { SummaryService } from './summary.js';
 import { createSiftAdapter, demoModelFetch } from './sift.js';
+import { createCaptionAdapter } from './captions.js';
 
 export interface Adapters {
   feed: typeof fetchFeed;
@@ -51,6 +52,7 @@ export class Engine {
       createSiftAdapter(config),
       this.destination,
       config.demo ? demoModelFetch : fetch,
+      createCaptionAdapter(config),
     );
     this.adapters = {
       feed: fetchFeed,

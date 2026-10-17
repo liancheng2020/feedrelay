@@ -9,7 +9,9 @@ import {
   type SiftAdapter,
   type SummaryInput,
   type Brief,
+  summaryLimits,
 } from './sift.js';
+import { CAPTION_SCOPE, captionEvidence, type Caption, type CaptionAdapter } from './captions.js';
 
 export interface SummaryRow {
   id: string;
@@ -30,6 +32,7 @@ export interface SummaryRow {
   created: number;
   finished: number | null;
   output_item: string;
+  material: string;
 }
 interface Policy {
   enabled: boolean;
@@ -52,12 +55,13 @@ export class SummaryService {
     public adapter: SiftAdapter,
     public destination: string,
     public transport: typeof fetch = fetch,
+    public captions?: CaptionAdapter,
   ) {}
   get stamp() {
     return contentHash({
       title: this.adapter.stamp,
       text: this.destination,
-      scope: 'summary-disclosure-1',
+      scope: `summary-disclosure-2:${this.captions?.stamp || 'no-captions'}`,
     });
   }
   policy(): Policy {
@@ -88,6 +92,7 @@ export class SummaryService {
       unknownUsageCalls: totals.unknown || 0,
       inputPrice: this.adapter.inputPrice,
       outputPrice: this.adapter.outputPrice,
+      captionsReady: !!this.captions?.available,
     };
   }
   configure(input: unknown) {
@@ -121,7 +126,13 @@ export class SummaryService {
     });
     return this.describe();
   }
-  authorize(sourceId: string, mode: unknown, notify: unknown, confirmed: unknown) {
+  authorize(
+    sourceId: string,
+    mode: unknown,
+    notify: unknown,
+    confirmed: unknown,
+    content?: unknown,
+  ) {
     if (
       !['off', 'manual', 'auto'].includes(String(mode)) ||
       typeof notify !== 'boolean' ||
@@ -129,15 +140,24 @@ export class SummaryService {
     )
       throw new AppError('SUMMARY_CONFIRMATION_REQUIRED');
     const source = this.store.source(sourceId);
+    content ??= source.summary_content;
+    if (
+      !['feed', 'captions'].includes(String(content)) ||
+      (content === 'captions' && source.type !== 'youtube')
+    )
+      throw new AppError('INVALID_SUMMARY_CONTENT');
+    if (mode !== 'off' && content === 'captions' && !this.captions?.available)
+      throw new AppError('YOUTUBE_RUNTIME_UNAVAILABLE');
     if (mode !== 'off' && (!source.enabled || !this.allowed()))
       throw new AppError('SUMMARY_NOT_ENABLED');
     this.store.tx(() => {
       this.store.run(
-        'UPDATE sources SET summary_mode=?,summary_notify=?,summary_consent=?,summary_since=? WHERE id=?',
+        'UPDATE sources SET summary_mode=?,summary_notify=?,summary_consent=?,summary_since=?,summary_content=? WHERE id=?',
         mode as string,
         mode === 'off' ? 0 : +notify,
         mode === 'off' ? '' : this.stamp,
         this.store.now(),
+        content as string,
         sourceId,
       );
       if (!notify)
@@ -164,6 +184,8 @@ export class SummaryService {
       source.summary_mode !== 'off' &&
       (row.origin !== 'auto' || source.summary_mode === 'auto') &&
       source.summary_consent === row.stamp &&
+      (source.summary_content === 'captions') === (row.scope === CAPTION_SCOPE) &&
+      (row.scope !== CAPTION_SCOPE || this.captions?.available) &&
       source.generation === row.generation &&
       row.stamp === this.stamp &&
       item &&
@@ -178,7 +200,7 @@ export class SummaryService {
     )) {
       if (this.authorized(row)) continue;
       this.store.run(
-        "UPDATE summaries SET status='cancelled',error='SUMMARY_CONSENT_OR_CONTENT_CHANGED',input='',result='',token='',lease=0 WHERE id=?",
+        "UPDATE summaries SET status='cancelled',error='SUMMARY_CONSENT_OR_CONTENT_CHANGED',input='',result='',material='',token='',lease=0 WHERE id=?",
         row.id,
       );
       if (row.output_item) {
@@ -219,7 +241,12 @@ export class SummaryService {
             this.stamp,
           );
       if (!source) throw new AppError('SUMMARY_SOURCE_NOT_AUTHORIZED');
-      const input = { title: item.title, text: item.text, scope: scope(item.kind) };
+      const isCaption = source.summary_content === 'captions';
+      const input = {
+        title: item.title,
+        text: item.text,
+        scope: isCaption ? CAPTION_SCOPE : scope(item.kind),
+      };
       const key = `${contentHash(input)}:${this.stamp}:${itemId}:${source.id}:${source.generation}`;
       const old = this.store.get<SummaryRow>('SELECT * FROM summaries WHERE cache_key=?', key);
       if (old) {
@@ -227,8 +254,9 @@ export class SummaryService {
           (retry && ['failed', 'unknown'].includes(old.status)) ||
           (origin === 'manual' && old.status === 'cancelled')
         ) {
-          if (item.text.length > MAX_BODY) throw new AppError('SUMMARY_CONTENT_TOO_LONG');
-          if (!item.text.trim()) throw new AppError('SUMMARY_NO_CONTENT');
+          if (!isCaption && item.text.length > MAX_BODY)
+            throw new AppError('SUMMARY_CONTENT_TOO_LONG');
+          if (!isCaption && !item.text.trim()) throw new AppError('SUMMARY_NO_CONTENT');
           this.store.run(
             "UPDATE summaries SET status='queued',error='',input=?,origin=?,notify=?,result='',finished=NULL,token='',lease=0 WHERE id=?",
             JSON.stringify(input),
@@ -255,12 +283,12 @@ export class SummaryService {
         +!!source.summary_notify,
         this.store.now(),
       );
-      if (item.text.length > MAX_BODY)
+      if (!isCaption && item.text.length > MAX_BODY)
         this.store.run(
           "UPDATE summaries SET status='failed',error='SUMMARY_CONTENT_TOO_LONG',input='' WHERE id=?",
           id,
         );
-      if (!item.text.trim())
+      if (!isCaption && !item.text.trim())
         this.store.run(
           "UPDATE summaries SET status='failed',error='SUMMARY_NO_CONTENT',input='' WHERE id=?",
           id,
@@ -298,6 +326,11 @@ export class SummaryService {
         created: row.created,
         finished: row.finished,
         result: row.result ? (JSON.parse(row.result) as Brief) : null,
+        caption: row.material
+          ? (({ language, kind, hash }) => ({ language, kind, hash }))(
+              JSON.parse(row.material) as Caption,
+            )
+          : null,
         current: row.stamp === this.stamp && !!this.authorized(row),
         output: row.output_item
           ? this.store.get('SELECT status,error FROM deliveries WHERE item_id=?', row.output_item)
@@ -320,7 +353,7 @@ export class SummaryService {
       this.store.run(
         "UPDATE summaries SET status='running',token=?,lease=? WHERE id=?",
         token,
-        this.store.now() + 120000,
+        this.store.now() + (next.scope === CAPTION_SCOPE ? 300000 : 120000),
         next.id,
       );
       return { ...next, token };
@@ -333,13 +366,16 @@ export class SummaryService {
         current.status !== 'running' ||
         current.token !== row.token ||
         current.lease <= this.store.now() ||
+        controller.signal.aborted ||
         !this.authorized(row)
       )
         throw new AppError('SUMMARY_CONSENT_REVOKED');
     };
+    const isCaption = row.scope === CAPTION_SCOPE;
+    const limits = summaryLimits(isCaption);
     let boundaryError: AppError | undefined;
     const controller = new AbortController(),
-      timeout = setTimeout(() => controller.abort(), 60000);
+      timeout = setTimeout(() => controller.abort(), limits.timeoutMs);
     const revoke = setInterval(() => {
       try {
         active();
@@ -352,7 +388,7 @@ export class SummaryService {
       let requests = 0;
       const guarded: typeof fetch = async (url, init) => {
         if (controller.signal.aborted) throw new AppError('SUMMARY_TIMEOUT_OR_CANCELLED');
-        if (++requests > 2) throw new AppError('SUMMARY_TASK_CALL_LIMIT');
+        if (++requests > limits.maxCalls) throw new AppError('SUMMARY_TASK_CALL_LIMIT');
         if (
           String(url) !== MODEL_ENDPOINT ||
           init?.method !== 'POST' ||
@@ -444,10 +480,32 @@ export class SummaryService {
         }
       };
       const input = JSON.parse(row.input) as SummaryInput;
-      const result = validateBrief(
+      let caption: Caption | undefined;
+      if (isCaption) {
+        if (!this.captions?.available) throw new AppError('YOUTUBE_RUNTIME_UNAVAILABLE');
+        const item = this.store.get<Item>('SELECT * FROM items WHERE id=?', row.item_id)!;
+        const videoId = item.key.match(/^youtube:([a-zA-Z0-9_-]{11})$/)?.[1];
+        if (!videoId) throw new AppError('YOUTUBE_INVALID_VIDEO_ID');
+        caption = row.material
+          ? (JSON.parse(row.material) as Caption)
+          : await this.captions.fetch(videoId, controller.signal);
+        active();
+        if (caption.videoId !== videoId) throw new AppError('YOUTUBE_CAPTION_CACHE_INVALID');
+        captionEvidence({ oneLiner: '', points: [] }, caption);
+        this.store.run(
+          'UPDATE summaries SET material=? WHERE id=? AND token=?',
+          JSON.stringify(caption),
+          row.id,
+          row.token,
+        );
+        input.text = caption.text;
+        input.captions = true;
+      }
+      let result = validateBrief(
         await this.adapter.run(input, request, controller.signal),
         input.text,
       );
+      if (caption) result = captionEvidence(result, caption);
       this.store.tx(() => {
         active();
         const source = this.store.source(row.source_id);
@@ -455,8 +513,13 @@ export class SummaryService {
         if (row.notify && source.summary_notify && source.notify) {
           const original = this.store.get<Item>('SELECT * FROM items WHERE id=?', row.item_id)!;
           const main =
-            `AI 摘要${this.adapter.model === 'demo-sift' ? '（模拟）' : ''} · ${input.scope}\n${input.title}\n\n${result.oneLiner}\n\n` +
-            result.points.map((p) => `${p.title}：${p.text}\n原文引用：${p.quote}`).join('\n\n');
+            `AI 摘要${this.adapter.model === 'demo-sift' ? '（模拟）' : ''} · ${input.scope}\n${input.title}\n${caption ? `${caption.language} · ${caption.kind === 'automatic' ? '自动字幕' : '平台人工字幕轨道'}\n` : ''}\n${result.oneLiner}\n\n` +
+            result.points
+              .map(
+                (p) =>
+                  `${p.title}：${p.text}\n原文引用：${p.quote}${p.url ? `\n${p.locator} ${p.url}` : ''}`,
+              )
+              .join('\n\n');
           const tail = `\n\n仅供参考，请核对原文。\n`;
           const text =
             main +
@@ -466,7 +529,7 @@ export class SummaryService {
               : '请在 FeedRelay 或邮箱查看原文');
           const item = this.store.put(
             {
-              key: `summary:${row.id}`,
+              key: `summary:${row.id}:${randomUUID()}`,
               kind: 'summary',
               title: `AI 摘要 · ${input.title}`,
               author: 'Sift',

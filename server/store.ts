@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppError, defaults, dayKey, preview, type Settings } from './config.js';
-import { migrateV2, migrateV3 } from './migrations.js';
+import { migrateV2, migrateV3, migrateV4 } from './migrations.js';
 
 export interface Source {
   id: string;
@@ -14,6 +14,7 @@ export interface Source {
   summary_notify: number;
   summary_consent: string;
   summary_since: number;
+  summary_content: 'feed' | 'captions';
   name: string;
   channel: string;
   sender: string;
@@ -109,7 +110,7 @@ export class Store {
     this.db = new DatabaseSync(join(dir, 'feedrelay.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = this.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
-    if (version > 3) {
+    if (version > 4) {
       this.db.close();
       throw new AppError('DATABASE_NEWER_THAN_APP');
     }
@@ -147,6 +148,7 @@ export class Store {
     try {
       migrateV2(this.db);
       migrateV3(this.db);
+      migrateV4(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -301,7 +303,7 @@ export class Store {
     ))
       if (row.output_item) this.expireItem(row.output_item);
     this.run(
-      "UPDATE summaries SET status='cancelled',error='SUMMARY_CONSENT_REVOKED',input='',result='',token='',lease=0 WHERE source_id=? AND status<>'expired'",
+      "UPDATE summaries SET status='cancelled',error='SUMMARY_CONSENT_REVOKED',input='',result='',material='',token='',lease=0 WHERE source_id=? AND status<>'expired'",
       s.id,
     );
     this.run(
@@ -676,7 +678,7 @@ export class Store {
       id,
     )) {
       this.run(
-        "UPDATE summaries SET input='',result='',status='expired',error='CONTENT_EXPIRED',token='',lease=0 WHERE id=?",
+        "UPDATE summaries SET input='',result='',material='',status='expired',error='CONTENT_EXPIRED',token='',lease=0 WHERE id=?",
         summary.id,
       );
       if (summary.output_item) this.expireItem(summary.output_item, eraseMetadata);
