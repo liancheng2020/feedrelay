@@ -202,6 +202,10 @@ const labels: Record<string, string> = {
   batched: '已纳入日报',
 };
 const errors: Record<string, string> = {
+  YOUTUBE_FEED_NOT_READY: '订阅接口暂不可用（404）',
+  YOUTUBE_HTTP_404: '订阅接口暂不可用（404）',
+  YOUTUBE_HTTP_500: '订阅接口暂不可用（500）',
+  YOUTUBE_UPLOADS_UNAVAILABLE: '暂未获取到视频',
   PUSH_NOT_READY: '推送通道尚未就绪；微信需先扫码绑定并向机器人发送一条消息。',
   WEIXIN_NOT_ENABLED: '当前未选择微信通道，请设置 PUSH_CHANNEL=weixin 后重启。',
   WEIXIN_NETWORK_ERROR: '无法连接微信服务，请稍后重新生成二维码。',
@@ -679,7 +683,7 @@ function jobSummary(job: Job) {
     return result.matched !== undefined
       ? `最近5封中匹配 ${result.matched} 封（未读取正文）`
       : result.visible !== undefined
-        ? `RSS 当前可见 ${result.visible} 条`
+        ? `发现 ${result.visible} 条内容`
         : '';
   } catch {
     return '';
@@ -1050,12 +1054,15 @@ onUnmounted(() => {
                 ><span v-if="s.enabled">{{ s.initialized ? '基线已建立' : '等待首次基线' }}</span
                 ><span v-if="s.backlog">积压 {{ s.backlog }} 条</span>
               </div>
-              <p v-if="s.error || s.coverage" class="source-warning">
+              <p
+                v-if="(s.error || s.coverage) && (s.error || s.coverage) !== latestJob(s)?.error && !(s.type === 'youtube' && s.error)"
+                class="source-warning"
+              >
                 {{ explain(s.error || s.coverage) }}
               </p>
               <p v-if="latestJob(s)" class="job-result">
                 {{ labels[latestJob(s)!.status] || latestJob(s)!.status
-                }}<span v-if="latestJob(s)!.error"> · {{ explain(latestJob(s)!.error) }}</span
+                }}<span v-if="latestJob(s)!.error && s.type !== 'youtube'"> · {{ explain(latestJob(s)!.error) }}</span
                 ><span v-else> {{ jobSummary(latestJob(s)!) }}</span>
               </p>
             </div>

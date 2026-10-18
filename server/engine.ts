@@ -10,6 +10,7 @@ import {
   type MailSession,
   type Envelope,
   type SendResult,
+  type FeedResult,
 } from './adapters.js';
 import { fetchRss } from './rss.js';
 import { freezeDigest } from './digest.js';
@@ -18,6 +19,7 @@ import { createDeepSeekAdapter, demoModelFetch } from './deepseek.js';
 import { createCaptionAdapter } from './captions.js';
 import { resolveChannel, resolveDemoChannel, youtubeTransport } from './youtube.js';
 import { Weixin } from './weixin.js';
+import { createYoutubeFeed } from './youtube-feed.js';
 
 export interface Adapters {
   resolveChannel: (input: string) => Promise<string>;
@@ -30,6 +32,7 @@ export class Engine {
   private owner = randomUUID();
   private busy = false;
   private stopped = false;
+  private feedAbort = new AbortController();
   private activeToken = '';
   private youtubeClient: ReturnType<typeof youtubeTransport>;
   readonly weixin: Weixin;
@@ -63,7 +66,7 @@ export class Engine {
       resolveChannel: config.demo
         ? resolveDemoChannel
         : (input) => resolveChannel(input, this.youtubeClient.request),
-      feed: (channel, cache) => fetchFeed(channel, cache, this.youtubeClient.request),
+      feed: createYoutubeFeed(config, this.youtubeClient.request, this.feedAbort.signal),
       rss: fetchRss,
       mailbox: () => connectMailbox(config),
       send:
@@ -141,6 +144,7 @@ export class Engine {
   }
   async stop() {
     this.stopped = true;
+    this.feedAbort.abort();
     this.summaries.cancel();
     await this.weixin.stop();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 25));
@@ -192,7 +196,7 @@ export class Engine {
       this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', cacheKey)?.value ||
         '{}',
     );
-    const result =
+    const result: FeedResult =
       s.type === 'rss'
         ? await this.adapters.rss(s.feed_url, s.initialized ? cache : {})
         : await this.adapters.feed(s.channel, s.initialized ? cache : {});
@@ -219,6 +223,8 @@ export class Engine {
       }
       for (const item of result.items) {
         const known = this.store.get('SELECT 1 FROM items WHERE key=?', item.key);
+        // A different metadata provider must not invalidate an existing summary or restore deleted content.
+        if (result.fallback && known) continue;
         const oldUnseen =
           s.type === 'youtube' &&
           !known &&

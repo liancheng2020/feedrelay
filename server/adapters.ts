@@ -112,11 +112,18 @@ export async function parseFeed(xml: string, channel: string): Promise<Incoming[
     };
   });
 }
+export interface FeedResult {
+  unchanged: boolean;
+  items: Incoming[];
+  etag?: string;
+  modified?: string;
+  fallback?: boolean;
+}
 export async function fetchFeed(
   channel: string,
   cache: { etag?: string; modified?: string } = {},
   request = fetch,
-) {
+): Promise<FeedResult> {
   let response;
   try {
     response = await request(
@@ -135,12 +142,17 @@ export async function fetchFeed(
     throw new AppError('YOUTUBE_NETWORK_ERROR', 502, true);
   }
   if (response.status === 304) return { unchanged: true, items: [] as Incoming[], ...cache };
-  if (!response.ok)
+  if (!response.ok) {
+    await response.body?.cancel();
+    // YouTube may return a transient feed 404 while the channel itself is still available.
+    if (response.status === 404)
+      throw new AppError('YOUTUBE_FEED_NOT_READY', 502, true, 60_000);
     throw new AppError(
       `YOUTUBE_HTTP_${response.status}`,
       502,
       response.status === 429 || response.status >= 500,
     );
+  }
   return {
     unchanged: false,
     items: await parseFeed(await bounded(response, 2_000_000), channel),

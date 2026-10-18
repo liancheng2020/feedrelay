@@ -59,6 +59,16 @@ test('YouTube fetch sends conditional request and never follows redirect', async
     /YOUTUBE_HTTP_429/,
   );
 });
+
+test('YT-F01: feed 404 is retryable and releases its response body; blocked access stays distinct', async () => {
+  let cancelled = false;
+  const response = new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 404 });
+  await assert.rejects(fetchFeed(channel, {}, async () => response), (error: any) =>
+    error.code === 'YOUTUBE_FEED_NOT_READY' && error.retryable === true && error.retryAfter === 60000);
+  assert.equal(cancelled, true);
+  await assert.rejects(fetchFeed(channel, {}, async () => new Response('', { status: 403 })),
+    (error: any) => error.code === 'YOUTUBE_HTTP_403' && !error.retryable);
+});
 test('HTML mail becomes inert text with no remote image or script', async () => {
   const text = await cleanMailBody(
     '<p>市场观察</p><script>secret()</script><img src="https://tracker.test/pixel"><form>password</form><p>下一段</p>',

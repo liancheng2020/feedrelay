@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { AppError } from '../server/config.js';
 import { Engine } from '../server/engine.js';
 import type { Incoming } from '../server/store.js';
-import type { Envelope } from '../server/adapters.js';
+import { fetchFeed, type Envelope } from '../server/adapters.js';
 import { fixture, incoming } from './helpers.js';
 
 test('YouTube first run is silent, new IDs notify, title edits do not', async (t) => {
@@ -22,6 +22,36 @@ test('YouTube first run is silent, new IDs notify, title edits do not', async (t
   await f.run();
   assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 1);
   data[1].title = '编辑后的标题';
+  f.store.enqueue('source', s.id, s.generation);
+  await f.run();
+  assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 1);
+});
+
+test('YT-F02: temporary feed 404 preserves an uninitialized source and recovery establishes a silent baseline', async (t) => {
+  let unavailable = true;
+  let data: Incoming[] = [];
+  const f = fixture(t, {
+    feed: async () => {
+      if (unavailable)
+        return fetchFeed('UC' + 'a'.repeat(22), {}, async () => new Response('', { status: 404 }));
+      return { unchanged: false, items: data, etag: '', modified: '' };
+    },
+  });
+  const s = f.source();
+  f.store.enqueue('source', s.id, s.generation);
+  await f.run();
+  assert.equal(f.store.source(s.id).initialized, 0);
+  assert.equal(f.store.source(s.id).enabled, 1);
+  assert.equal(f.store.source(s.id).error, 'YOUTUBE_FEED_NOT_READY');
+  assert.equal(f.store.get('SELECT status FROM jobs WHERE resource=?', s.id)!.status, 'retry_wait');
+  unavailable = false;
+  data = [incoming('old', f.now() - 1000)];
+  f.advance(60000);
+  await f.run();
+  assert.equal(f.store.source(s.id).initialized, 1);
+  assert.equal(f.store.source(s.id).error, '');
+  assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 0);
+  data.push(incoming('new', f.now()));
   f.store.enqueue('source', s.id, s.generation);
   await f.run();
   assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 1);

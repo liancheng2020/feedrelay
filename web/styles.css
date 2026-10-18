@@ -1617,8 +1617,19 @@ label select {
   gap: 12px;
   margin: 10px 0;
 }
+.summary-source-controls .mode-picker {
+  margin-bottom: 0;
+}
 .summary-source-controls .check {
   margin: 0;
+  align-items: center;
+  min-height: 32px;
+  white-space: nowrap;
+}
+.summary-source-controls .check input[type='checkbox'] {
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
 }
 .settings-form > .section-note,
 .settings-form > .alert {
