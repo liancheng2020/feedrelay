@@ -177,7 +177,7 @@ const activation = ref<Source | null>(null),
   resumeMode = ref('new_only');
 const deletion = ref<Source | null>(null),
   erase = ref(false);
-const confirmation = ref<{ title: string; text: string; run: () => Promise<void> } | null>(null);
+const confirmation = ref<{ title: string; text: string; danger?: boolean; run: () => Promise<void> } | null>(null);
 const preferences = ref<Prefs>({
   timezone: 'Asia/Shanghai',
   youtubeMinutes: 15,
@@ -577,6 +577,17 @@ async function remove() {
 async function inspect(item: Item) {
   location.hash = `items/${item.id}`;
 }
+function deleteUpdate(item: Item) {
+  confirmation.value = {
+    title: '删除这条更新？',
+    danger: true,
+    text: `“${item.title || '这条记录'}”将从列表移除，正文和摘要会被清理，尚未发送的投递将停止。已发送的消息无法撤回。`,
+    run: async () => {
+      await api(`/items/${item.id}`, 'DELETE', { confirmed: true });
+      if (items.value.length === 1 && page.value > 1) page.value--;
+    },
+  };
+}
 function pushSummary(row: SummaryView) {
   const id = detail.value?.id;
   if (!id) return;
@@ -838,7 +849,7 @@ onUnmounted(() => {
                 <th scope="col">AI 摘要</th>
                 <th scope="col">投递状态</th>
                 <th scope="col">时间 ↓</th>
-                <th scope="col"><span class="sr-only">详情</span></th>
+                <th scope="col"><span class="sr-only">操作</span></th>
               </tr>
             </thead>
             <tbody>
@@ -872,14 +883,24 @@ onUnmounted(() => {
                 <td class="update-time" data-label="时间">
                   <time>{{ time(item.received || item.published || item.discovered) }}</time>
                 </td>
-                <td class="update-arrow">
-                  <a
-                    :href="`#items/${item.id}`"
-                    :aria-label="`查看详情：${item.title}`"
-                    title="查看详情"
-                    @click.stop
-                    ><ChevronRight :size="17"
-                  /></a>
+                <td class="update-actions">
+                  <div>
+                    <a
+                      class="icon"
+                      :href="`#items/${item.id}`"
+                      :aria-label="`查看详情：${item.title}`"
+                      title="查看详情"
+                      @click.stop
+                      ><ChevronRight :size="17"
+                    /></a>
+                    <button
+                      class="icon delete-update"
+                      :aria-label="`删除记录：${item.title}`"
+                      title="删除记录"
+                      :disabled="busy"
+                      @click.stop="deleteUpdate(item)"
+                    ><Trash2 :size="16" /></button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -1351,7 +1372,7 @@ onUnmounted(() => {
       <section class="modal" role="dialog" aria-modal="true" :aria-label="confirmation.title">
         <header>
           <h2>{{ confirmation.title }}</h2>
-          <button class="icon" aria-label="关闭" @click="confirmation = null">
+          <button class="icon confirmation-close" aria-label="关闭" @click="confirmation = null">
             <X :size="20" />
           </button>
         </header>
@@ -1359,7 +1380,9 @@ onUnmounted(() => {
         <p v-if="error" class="error" role="alert">{{ error }}</p>
         <div class="form-footer">
           <button @click="confirmation = null">取消</button
-          ><button class="primary" :disabled="busy" @click="confirm">确认</button>
+          ><button :class="confirmation.danger ? 'danger' : 'primary'" :disabled="busy" @click="confirm">
+            {{ confirmation.danger ? '确认删除' : '确认' }}
+          </button>
         </div>
       </section>
     </div>

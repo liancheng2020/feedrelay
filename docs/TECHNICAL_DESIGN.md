@@ -1,5 +1,7 @@
 # 技术设计
 
+FR-27：DELETE /api/items/:id要求会话、Origin/CSRF和confirmed=true；事务内复用expireItem(id,true)，另以meta的item-deleted:<id>标记列表隐藏与详情404。保留items.key，后续put遇到expired条目不恢复正文或投递；沿用既有保留周期，不保证超过去重保留窗口后永久屏蔽。正文/摘要清理与未发快照失效原子执行，模型调用账本不删除；运行中的摘要受现有token/授权围栏阻止再次发布。无schema升级。
+
 FR-24：在原CaptionAdapter中组合可选的本地ASR，仅YOUTUBE_NO_CAPTIONS/EMPTY_CAPTION触发；读取公开音频后由faster-whisper/PyAV直接解码，不依赖系统ffmpeg。复用Caption数据结构，新增transcribed类型及ASR模型标识，哈希与证据校验覆盖真实来源。原summary material缓存和调用账本保留。阶段进度写meta临时键供独立Web/Worker读取，结束删除；无新schema/队列。最长60分钟音频、100MB、转写30分钟硬超时、原48000码元全文上限；超限拒绝，不截断。仅字幕路径仍保持45秒提取限制；启用ASR的总任务上限增加以容纳本地计算，不增加模型请求预算。
 
 视频摘要由模型选择原始时间段标记，程序生成该段前120个字符的定位片段，避免繁简转换、识别错字被模型改写后触发引文失败。不存在的标记拒绝；分块合并只能选择候选原文，最终仍校验完整来源哈希、片段及时间链接。定位片段不证明语义支持，转写错误需要回听核查。yt-dlp字幕PO Token警告只映射为受限错误，不打印签名URL或当作无字幕处理。

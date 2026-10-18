@@ -676,6 +676,16 @@ export class Store {
   releaseWorker(token: string) {
     this.run(`DELETE FROM locks WHERE name='worker' AND token=?`, token);
   }
+  deleteItem(id: string) {
+    this.tx(() => {
+      const item = this.get<Item>('SELECT * FROM items WHERE id=?', id);
+      if (!item || !['youtube', 'rss', 'email'].includes(item.kind))
+        throw new AppError('ITEM_NOT_FOUND', 404);
+      this.expireItem(id, true);
+      this.run('INSERT OR IGNORE INTO meta VALUES (?,?)', `item-deleted:${id}`, '1');
+      this.event('item_deleted', id);
+    });
+  }
   private expireItem(id: string, eraseMetadata = false) {
     for (const summary of this.all<{ id: string; output_item: string }>(
       'SELECT id,output_item FROM summaries WHERE item_id=?',

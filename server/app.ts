@@ -327,7 +327,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       source = String(ctx.query.source || '');
     const joins =
       'items i LEFT JOIN deliveries d ON d.item_id=i.id LEFT JOIN deliveries p ON p.id=d.part_id';
-    const where = `WHERE i.kind NOT IN ('digest','summary') AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
+    const where = `WHERE i.kind NOT IN ('digest','summary') AND NOT EXISTS(SELECT 1 FROM meta m WHERE m.key='item-deleted:' || i.id) AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
     const params = [status, status, source, source];
     ctx.body = {
       page,
@@ -347,9 +347,16 @@ export function createApp(store: Store, config: Config, engine: Engine) {
         }),
     };
   });
+  router.delete('/api/items/:id', (ctx) => {
+    if ((ctx.request.body as { confirmed?: boolean }).confirmed !== true)
+      throw new AppError('DELETE_CONFIRMATION_REQUIRED');
+    store.deleteItem(String(ctx.params.id));
+    ctx.body = { ok: true };
+  });
   router.get('/api/items/:id', (ctx) => {
     const item = store.get<Item>('SELECT * FROM items WHERE id=?', String(ctx.params.id));
-    if (!item) throw new AppError('ITEM_NOT_FOUND', 404);
+    if (!item || store.get('SELECT 1 FROM meta WHERE key=?', `item-deleted:${item.id}`))
+      throw new AppError('ITEM_NOT_FOUND', 404);
     let d = store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id);
     if (d?.part_id) d = store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.part_id);
     ctx.body = {
