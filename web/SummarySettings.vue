@@ -46,35 +46,37 @@ watch(
 </script>
 <template>
   <form
-    class="settings-band settings-form"
+    class="settings-band settings-form summary-settings"
     @submit.prevent="
       emit('save', { enabled, maxCalls, maxCostCny });
       consent = false;
     "
   >
-    <h2>
-      DeepSeek 摘要
-      <span class="badge" :class="value.enabled ? 'sent' : 'cancelled'">{{
-        value.enabled ? '已启用' : '默认关闭'
-      }}</span>
-    </h2>
-    <p class="section-note">
-      {{
-        demo
-          ? '模拟模型，不产生外部请求或真实费用。'
-          : `${value.model} · ${value.destination}。仅处理已授权来源，原始提醒不等待摘要。`
-      }}
-    </p>
-    <p class="muted">
-      YouTube 字幕：{{
-        value.captionsReady ? '可选择，仍需逐频道授权' : '未启用，简介订阅不受影响'
-      }}。{{
-        value.asrReady
-          ? '本地转写已就绪：无字幕时读取公开音频并在本机转写，最长60分钟视频、35分钟任务。'
-          : '本地转写未启用。字幕任务最长4分钟。'
-      }}
-      视频摘要最多12次模型请求；简介、邮件及RSS仍最多2次与60秒，均占用累计预算。
-    </p>
+    <header class="summary-settings-head">
+      <h2>
+        DeepSeek 摘要
+        <span class="badge" :class="value.enabled ? 'sent' : 'cancelled'">{{
+          value.enabled ? '已启用' : '默认关闭'
+        }}</span>
+      </h2>
+      <p class="section-note">
+        {{
+          demo
+            ? '模拟模型，不产生外部请求或真实费用。'
+            : `${value.model} · ${value.destination} · 已授权订阅先摘要后推送。`
+        }}
+      </p>
+      <p class="muted">
+        YouTube 字幕：{{
+          value.captionsReady ? '可选择，仍需逐频道授权' : '未启用，简介订阅不受影响'
+        }}。{{
+          value.asrReady
+            ? '本地转写已就绪：无字幕时读取公开音频并在本机转写，最长60分钟视频、35分钟任务。'
+            : '本地转写未启用。字幕任务最长4分钟。'
+        }}
+        视频摘要最多12次模型请求；简介、邮件及RSS仍最多2次与60秒，均占用累计预算。
+      </p>
+    </header>
     <p v-if="!value.ready" class="alert">
       尚未配置 DEEPSEEK_ENABLED、DEEPSEEK_API_KEY 与模型价格。
     </p>
@@ -100,7 +102,7 @@ watch(
         v-model="enabled"
         type="checkbox"
         :disabled="!value.ready && !enabled"
-      />启用可选摘要</label
+      /><span>启用可选摘要</span></label
     >
     <label
       >累计请求上限<input v-model.number="maxCalls" type="number" min="0" max="10000" required
@@ -123,7 +125,7 @@ watch(
       ><input
         v-model="consent"
         type="checkbox"
-      />我确认外发范围、价格和累计预算；仅对另行授权来源生效。</label
+      /><span>我确认外发范围、价格和累计预算；仅对另行授权来源生效。</span></label
     >
     <div class="form-footer">
       <button class="primary" :disabled="busy || !consent"><Check :size="17" />保存摘要预算</button>

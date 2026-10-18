@@ -1,5 +1,9 @@
 # 技术设计
 
+FR-33：勾选框显式覆盖普通输入框的40px min-height，统一为16px、零外边距并居中对齐；SummarySettings说明使用通栏header与8px段落间隔，表单行距16px，移除说明/用量/按钮的叠加间距。只改样式和过时的推送说明，不改设置保存逻辑。
+
+FR-32：GET /api/items接受pageSize=10/20/50/100，其余取20；返回page/pageSize/total/items。先按同一筛选计数，再将page限制到有效范围，SQL参数化LIMIT/OFFSET；前端同步服务端页码，每页条数与原筛选共用回首页加载逻辑，无持久数据迁移。
+
 FR-31优先于旧补充通知设计：Store.put为AI来源创建空快照原投递，error=SUMMARY_REQUIRED；SummaryService.prepareDeliveries仅在最新有效摘要成功后填充标题/编号要点，resolution记录summary:<id>。即时claim和日报冻结均排除未就绪快照；失败不降级。发送重试保留快照与投递ID，不再请求模型。人工推送相同摘要复用原记录；仅采集/历史条目的明确手动推送仍可建立独立快照。摘要授权失效取消准备好的未发投递及相关日报分片，保留记录。无schema升级。
 
 FR-30：本地ASR使用BatchedInferencePipeline，batch_size=4、beam_size=3、CPU int8/4线程；保留逐段时间戳与完整音频，优先<=64kbps音轨，缺少时回退可用音轨。手动摘要优先于自动摘要；已有自动排队任务可原地提升优先级，有手动任务时不启动下一条来源检查，但不打断正在运行的网络请求或转写。summary_stage事件仅记录阶段变化，便于区分提取与模型耗时。无新队列、schema或依赖。

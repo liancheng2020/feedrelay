@@ -140,10 +140,12 @@ const sources = ref<Source[]>([]),
   jobs = ref<Job[]>([]),
   overview = ref<Overview | null>(null);
 const page = ref(1),
+  pageSize = ref(20),
   total = ref(0),
   sourceFilter = ref(''),
   statusFilter = ref(''),
   detail = ref<Detail | null>(null);
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
 const editor = ref(false),
   editing = ref(''),
   form = ref({
@@ -177,7 +179,12 @@ const activation = ref<Source | null>(null),
   resumeMode = ref('new_only');
 const deletion = ref<Source | null>(null),
   erase = ref(false);
-const confirmation = ref<{ title: string; text: string; danger?: boolean; run: () => Promise<void> } | null>(null);
+const confirmation = ref<{
+  title: string;
+  text: string;
+  danger?: boolean;
+  run: () => Promise<void>;
+} | null>(null);
 const preferences = ref<Prefs>({
   timezone: 'Asia/Shanghai',
   youtubeMinutes: 15,
@@ -382,11 +389,12 @@ async function load() {
   jobs.value = await api<Job[]>('/jobs');
   digests.value = await api<Digest[]>('/digests');
   summaryConfig.value = await api<SummaryConfig>('/summaries/settings');
-  const result = await api<{ items: Item[]; total: number }>(
-    `/items?page=${page.value}&source=${encodeURIComponent(sourceFilter.value)}&status=${statusFilter.value}`,
+  const result = await api<{ items: Item[]; total: number; page: number }>(
+    `/items?page=${page.value}&pageSize=${pageSize.value}&source=${encodeURIComponent(sourceFilter.value)}&status=${statusFilter.value}`,
   );
   items.value = result.items;
   total.value = result.total;
+  page.value = result.page;
   const id = detailId.value;
   if (id) {
     const result = await api<Detail>(`/items/${id}`);
@@ -882,7 +890,9 @@ onUnmounted(() => {
                   <span class="badge" :class="item.status">{{
                     item.resolution === 'user_acknowledged'
                       ? '已人工核查'
-                      : item.error === 'SUMMARY_REQUIRED' ? '等待摘要' : labels[item.status || 'discovered']
+                      : item.error === 'SUMMARY_REQUIRED'
+                        ? '等待摘要'
+                        : labels[item.status || 'discovered']
                   }}</span>
                 </td>
                 <td class="update-time" data-label="时间">
@@ -904,16 +914,35 @@ onUnmounted(() => {
                       title="删除记录"
                       :disabled="busy"
                       @click.stop="deleteUpdate(item)"
-                    ><Trash2 :size="16" /></button>
+                    >
+                      <Trash2 :size="16" />
+                    </button>
                   </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-        <footer class="pagination">
-          <span>第 {{ page }} 页</span
-          ><button
+        <footer class="pagination" aria-label="列表分页">
+          <span class="pagination-range"
+            >{{ total ? (page - 1) * pageSize + 1 : 0 }}–{{ Math.min(page * pageSize, total) }} /
+            {{ total }} 条</span
+          >
+          <label class="page-size"
+            >每页
+            <select
+              v-model.number="pageSize"
+              aria-label="每页条数"
+              :disabled="busy"
+              @change="filter"
+            >
+              <option v-for="size in [10, 20, 50, 100]" :key="size" :value="size">
+                {{ size }}
+              </option>
+            </select>
+          </label>
+          <span class="pagination-page">{{ page }} / {{ totalPages }} 页</span>
+          <button
             class="icon"
             aria-label="上一页"
             :disabled="page <= 1 || busy"
@@ -926,7 +955,7 @@ onUnmounted(() => {
           ><button
             class="icon"
             aria-label="下一页"
-            :disabled="page * 30 >= total || busy"
+            :disabled="page >= totalPages || busy"
             @click="
               page++;
               act(load);
@@ -1048,14 +1077,19 @@ onUnmounted(() => {
                 ><span v-if="s.backlog">积压 {{ s.backlog }} 条</span>
               </div>
               <p
-                v-if="(s.error || s.coverage) && (s.error || s.coverage) !== latestJob(s)?.error && !(s.type === 'youtube' && s.error)"
+                v-if="
+                  (s.error || s.coverage) &&
+                  (s.error || s.coverage) !== latestJob(s)?.error &&
+                  !(s.type === 'youtube' && s.error)
+                "
                 class="source-warning"
               >
                 {{ explain(s.error || s.coverage) }}
               </p>
               <p v-if="latestJob(s)" class="job-result">
                 {{ labels[latestJob(s)!.status] || latestJob(s)!.status
-                }}<span v-if="latestJob(s)!.error && s.type !== 'youtube'"> · {{ explain(latestJob(s)!.error) }}</span
+                }}<span v-if="latestJob(s)!.error && s.type !== 'youtube'">
+                  · {{ explain(latestJob(s)!.error) }}</span
                 ><span v-else> {{ jobSummary(latestJob(s)!) }}</span>
               </p>
             </div>
@@ -1099,7 +1133,7 @@ onUnmounted(() => {
       </template>
       <template v-if="view === 'settings'">
         <section class="settings-band">
-          <h2>连接状态</h2>
+          <h2>邮箱接入</h2>
           <div class="connection-row">
             <Mail :size="21" />
             <div>
@@ -1380,7 +1414,11 @@ onUnmounted(() => {
         <p v-if="error" class="error" role="alert">{{ error }}</p>
         <div class="form-footer">
           <button @click="confirmation = null">取消</button
-          ><button :class="confirmation.danger ? 'danger' : 'primary'" :disabled="busy" @click="confirm">
+          ><button
+            :class="confirmation.danger ? 'danger' : 'primary'"
+            :disabled="busy"
+            @click="confirm"
+          >
             {{ confirmation.danger ? '确认删除' : '确认' }}
           </button>
         </div>

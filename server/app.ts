@@ -322,20 +322,25 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     );
   });
   router.get('/api/items', (ctx) => {
-    const page = Math.max(1, Math.min(100_000, Math.floor(Number(ctx.query.page) || 1)));
+    const requestedPage = Math.max(1, Math.min(100_000, Math.floor(Number(ctx.query.page) || 1)));
+    const requestedSize = Number(ctx.query.pageSize);
+    const pageSize = [10, 20, 50, 100].includes(requestedSize) ? requestedSize : 20;
     const status = String(ctx.query.status || ''),
       source = String(ctx.query.source || '');
     const joins =
       'items i LEFT JOIN deliveries d ON d.item_id=i.id LEFT JOIN deliveries p ON p.id=d.part_id';
     const where = `WHERE i.kind NOT IN ('digest','summary') AND NOT EXISTS(SELECT 1 FROM meta m WHERE m.key='item-deleted:' || i.id) AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
     const params = [status, status, source, source];
+    const total = store.get<{ n: number }>(`SELECT count(*) n FROM ${joins} ${where}`, ...params)!.n;
+    const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
     ctx.body = {
       page,
-      total: store.get(`SELECT count(*) n FROM ${joins} ${where}`, ...params)!.n,
+      pageSize,
+      total,
       items: store
         .all<
           Item & Partial<Delivery>
-        >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY COALESCE(i.received,i.published,i.discovered) DESC,i.discovered DESC,i.rowid DESC LIMIT 30 OFFSET ?`, ...params, (page - 1) * 30)
+        >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY COALESCE(i.received,i.published,i.discovered) DESC,i.discovered DESC,i.rowid DESC LIMIT ? OFFSET ?`, ...params, pageSize, (page - 1) * pageSize)
         .map((i) => {
           const summary = engine.summaries.list(i.id).find((row) => row.current);
           return {

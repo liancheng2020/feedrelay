@@ -85,7 +85,7 @@ test('API auth, Origin, CSRF, disclosure and source lifecycle', async (t) => {
   assert.equal((await (await request('/sources')).json()).length, 0);
 });
 
-test('FR-08: updates sort by displayed content time before pagination and filtering', async (t) => {
+test('FR-08 / PG-01: updates retain time order across page sizes, filters and page boundaries', async (t) => {
   const f = fixture(t),
     source = f.source('youtube', false),
     email = f.source('email', false),
@@ -138,8 +138,9 @@ test('FR-08: updates sort by displayed content time before pagination and filter
   const first = await items('?page=1'),
     second = await items('?page=2');
   assert.equal(first.total, 37);
-  assert.equal(first.items.length, 30);
-  assert.equal(second.items.length, 7);
+  assert.equal(first.pageSize, 20);
+  assert.equal(first.items.length, 20);
+  assert.equal(second.items.length, 17);
   assert.deepEqual(
     [...first.items, ...second.items].map((item: { id: string }) => item.id),
     expected.map((item) => item.id),
@@ -149,6 +150,28 @@ test('FR-08: updates sort by displayed content time before pagination and filter
   assert.equal(filtered.total, youtube.length);
   assert.deepEqual(
     filtered.items.map((item: { id: string }) => item.id),
-    youtube.slice(0, 30).map((item) => item.id),
+    youtube.slice(0, 20).map((item) => item.id),
   );
+  for (const size of [10, 20, 50, 100]) {
+    const ids: string[] = [];
+    const pages = Math.ceil(expected.length / size);
+    for (let page = 1; page <= pages; page++) {
+      const result = await items(`?page=${page}&pageSize=${size}`);
+      assert.equal(result.page, page);
+      assert.equal(result.pageSize, size);
+      assert.equal(result.items.length, Math.min(size, expected.length - (page - 1) * size));
+      ids.push(...result.items.map((item: { id: string }) => item.id));
+    }
+    assert.deepEqual(ids, expected.map((item) => item.id));
+    assert.equal((await items(`?page=999&pageSize=${size}`)).page, pages);
+  }
+  for (const size of ['0', '-1', '30', '1000', '10.5', 'bad']) {
+    const result = await items(`?pageSize=${size}`);
+    assert.equal(result.pageSize, 20);
+    assert.equal(result.items.length, 20);
+  }
+  const empty = await items('?source=missing&page=999&pageSize=10');
+  assert.equal(empty.page, 1);
+  assert.equal(empty.total, 0);
+  assert.deepEqual(empty.items, []);
 });

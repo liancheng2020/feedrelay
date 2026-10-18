@@ -1060,6 +1060,7 @@ label select {
 }
 .pagination {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   justify-content: flex-end;
@@ -1067,8 +1068,24 @@ label select {
   color: #819188;
   font-size: 12px;
 }
-.pagination > span {
-  margin-right: 10px;
+.pagination-range {
+  margin-right: auto;
+}
+.pagination-page,
+.pagination-range {
+  white-space: nowrap;
+}
+.page-size {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.page-size select {
+  width: 76px;
+  height: 34px;
+  padding: 5px 8px;
 }
 .section-note {
   color: #7d8c83;
@@ -1139,8 +1156,10 @@ label select {
   display: flex;
   align-items: center;
   gap: 15px;
-  padding: 15px 0;
-  border-bottom: 1px solid #e5eae7;
+  padding: 0;
+}
+.connection-row + .connection-row {
+  margin-top: 17px;
 }
 .connection-row > svg {
   color: #6c8979;
@@ -1430,6 +1449,9 @@ label select {
     gap: 10px;
     flex-wrap: wrap;
   }
+  .pagination-range {
+    flex-basis: 100%;
+  }
   .filter-bar label {
     min-width: 0;
     flex: 1;
@@ -1639,7 +1661,7 @@ label select {
 label.check {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
+  align-items: center;
   gap: 9px;
   grid-column: 1/-1;
   line-height: 1.6;
@@ -1647,8 +1669,31 @@ label.check {
 label.check input[type='checkbox'] {
   width: 16px;
   height: 16px;
+  min-height: 16px;
   flex: 0 0 16px;
-  margin: 3px 0 0;
+  margin: 0;
+  padding: 0;
+}
+.summary-settings {
+  row-gap: 16px;
+}
+.summary-settings-head {
+  grid-column: 1/-1;
+  display: grid;
+  gap: 8px;
+}
+.summary-settings-head h2,
+.summary-settings-head p {
+  margin: 0;
+}
+.summary-settings .section-note {
+  padding-bottom: 0;
+}
+.summary-settings .summary-usage {
+  margin-bottom: 0;
+}
+.summary-settings .form-footer {
+  margin-top: 0;
 }
 .summary-usage {
   display: flex;
