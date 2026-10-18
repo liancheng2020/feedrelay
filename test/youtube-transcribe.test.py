@@ -39,13 +39,17 @@ class Tests(unittest.TestCase):
                 assert kwargs['local_files_only'] is True
                 assert kwargs['device'] == 'cpu'
             def transcribe(self, path, **kwargs):
+                assert kwargs['batch_size'] == 4
+                assert kwargs['beam_size'] == 3
+                assert kwargs['without_timestamps'] is False
+                assert kwargs['vad_parameters'] == {'min_silence_duration_ms': 2000}
                 assert Path(path).read_bytes() == b'SYNTHETIC_AUDIO'
                 if fail: raise ValueError('synthetic failure')
                 return iter([types.SimpleNamespace(start=0,end=10,text='first'),
                              types.SimpleNamespace(start=110,end=120,text='last')]), types.SimpleNamespace(language='en')
         modules = {'yt_dlp':types.SimpleNamespace(YoutubeDL=Downloader),
                    'yt_dlp.globals':types.SimpleNamespace(plugin_dirs=types.SimpleNamespace(value=[])),
-                   'faster_whisper':types.SimpleNamespace(WhisperModel=Model)}
+                   'faster_whisper':types.SimpleNamespace(WhisperModel=Model, BatchedInferencePipeline=lambda model: model)}
         with patch.dict(sys.modules,modules), patch.object(module,'version',side_effect=lambda name: '1.2.1' if name=='faster-whisper' else '16.1.0'), patch.object(Path,'read_bytes',autospec=True,side_effect=lambda p: b'{}' if p.name=='config.json' else b'SYNTHETIC_AUDIO'):
             result = module.transcribe({'id':'abcdefghijk','proxy':'','node':'/trusted/node','model':'/local/model'})
             fail = True
@@ -58,6 +62,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(options['socket_timeout'],30)
         self.assertEqual(options['retries'],2)
         self.assertEqual(options['http_chunk_size'],1024*1024)
+        self.assertEqual(options['format'], 'bestaudio[abr<=64]/bestaudio')
         self.assertNotIn('vcodec',options['format'])
         with self.assertRaisesRegex(module.TranscribeError,'TOO_LARGE'):
             options['progress_hooks'][0]({'downloaded_bytes':100000001})

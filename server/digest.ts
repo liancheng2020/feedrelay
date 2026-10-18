@@ -42,7 +42,7 @@ export function freezeDigest(store: Store, destination: string) {
     )
       return;
     const members = store.all<Delivery>(
-      `SELECT d.* FROM deliveries d JOIN items i ON i.id=d.item_id WHERE d.mode='digest' AND d.status='digest_wait' AND d.created<=? AND d.destination=? AND i.expired=0 AND EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=d.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0) ORDER BY d.created,d.id LIMIT 500`,
+      `SELECT d.* FROM deliveries d JOIN items i ON i.id=d.item_id WHERE d.mode='digest' AND d.status='digest_wait' AND d.snapshot<>'' AND d.error<>'SUMMARY_REQUIRED' AND d.created<=? AND d.destination=? AND i.expired=0 AND EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=d.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0) ORDER BY d.created,d.id LIMIT 500`,
       due.cutoff,
       destination,
     );
@@ -80,7 +80,7 @@ export function freezeDigest(store: Store, destination: string) {
     );
     groups.forEach((group, index) => {
       const text =
-        `FeedRelay 日报 · ${due.label}\n${index + 1}/${groups.length} 分片 · 原文预览，非 AI 摘要\n\n` +
+        `FeedRelay 日报 · ${due.label}\n${index + 1}/${groups.length} 分片\n\n` +
         group.map((m, n) => `${n + 1}. ${m.snapshot}`).join('\n\n---\n\n');
       const sources = store.all<Source>(
         `SELECT DISTINCT s.* FROM sources s JOIN source_items si ON s.id=si.source_id JOIN deliveries d ON d.item_id=si.item_id WHERE d.id IN (${group.map(() => '?').join(',')}) AND s.enabled=1 AND s.notify=1 AND s.deleted=0`,

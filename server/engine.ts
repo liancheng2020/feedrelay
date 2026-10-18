@@ -117,11 +117,12 @@ export class Engine {
       this.store.schedule();
       // One process owns the loop; two bounded reads avoid an unbounded catch-up burst.
       for (let n = 0; n < 2 && !this.stopped; n++) {
+        if (this.store.get("SELECT 1 FROM summaries WHERE status='queued' AND origin='manual' LIMIT 1")) break;
         const job = this.store.claimJob();
         if (job) await this.execute(job);
       }
-      if (!this.stopped) freezeDigest(this.store, this.destination);
       this.summaries.reconcile();
+      if (!this.stopped) freezeDigest(this.store, this.destination);
       if (this.pushReady && !this.stopped)
         for (let n = 0; n < 5 && !this.stopped; n++) {
           const d = this.store.claimDelivery(this.destination);

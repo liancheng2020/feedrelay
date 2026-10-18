@@ -11,7 +11,7 @@ async function confirm(page: Page, title: string) {
     .getByRole('button', { name: '确认', exact: true })
     .click();
 }
-test('v0.3 desktop: opt-in budget, source disclosure, cached summary and independent supplement', async ({
+test('v0.3 desktop: opt-in budget, source disclosure and cached summary before subscription delivery', async ({
   page,
 }, info) => {
   const errors: string[] = [];
@@ -36,14 +36,12 @@ test('v0.3 desktop: opt-in budget, source disclosure, cached summary and indepen
   const row = page.locator('.source-row').filter({ hasText: 'AI 工程观察 · 样例' });
   await row.getByLabel('AI摘要', { exact: true }).selectOption('manual');
   await expect(page.getByRole('dialog', { name: '授权此来源摘要？' })).toContainText(
-    '摘要仅在详情页查看',
+    '摘要完成后按订阅投递方式推送',
   );
   await confirm(page, '授权此来源摘要？');
   await row.getByLabel('摘要正文', { exact: true }).selectOption('captions');
   await confirm(page, '授权此来源摘要？');
-  await row.getByLabel('私聊追加AI补充').click();
-  await confirm(page, '授权此来源摘要？');
-  await expect(row.getByLabel('私聊追加AI补充')).toBeChecked();
+  await expect(row.getByText('私聊追加AI补充')).toHaveCount(0);
   await page.getByRole('navigation').getByRole('button', { name: '最新更新' }).click();
   await page
     .getByRole('link', { name: 'Agent 的边界：把不确定的决策放进确定的流程', exact: true })
@@ -54,7 +52,9 @@ test('v0.3 desktop: opt-in budget, source disclosure, cached summary and indepen
   await expect(detail.locator('.reading-summary')).toContainText('已生成', { timeout: 15000 });
   await expect(detail.locator('.summary-points blockquote')).toContainText('合成字幕：');
   await expect(detail.locator('.reading-summary')).toContainText('1 次请求');
-  await expect(detail.locator('.reading-summary')).toContainText('接口已接受', {
+  await detail.getByRole('button', { name: '飞书推送', exact: true }).click();
+  await confirm(page, '推送最新摘要到飞书？');
+  await expect(detail).toContainText('接口已接受', {
     timeout: 15000,
   });
   await page.screenshot({ path: info.outputPath('desktop-item-summary.png'), fullPage: true });

@@ -30,7 +30,7 @@ function setup(t: Parameters<typeof fixture>[0], mode = 'manual', notify = false
   const service = f.engine.summaries;
   service.configure({ enabled: true, maxCalls: 10, maxCostCny: 1, confirmed: true });
   service.authorize(s.id, mode, notify, true);
-  const item = () =>
+  const item = (notify = true) =>
     f.store.put(
       {
         ...incoming(`test-item-${f.now()}`, f.now()),
@@ -39,7 +39,7 @@ function setup(t: Parameters<typeof fixture>[0], mode = 'manual', notify = false
         text: '会议于2026年10月16日召开，计划于11月发布。',
       },
       [f.store.source(s.id)],
-      true,
+      notify,
       'demo',
     );
   return { ...f, s, service, item };
@@ -54,6 +54,32 @@ const call = (request: typeof fetch, signal: AbortSignal) =>
     }),
     signal,
   });
+
+test('ASR-P01: manual summaries precede automatic work and pending source checks', async (t) => {
+  const f = setup(t, 'auto');
+  const auto = f.service.enqueue(f.item().id, 'auto');
+  f.advance(1);
+  const manualItem = f.item();
+  const manual = f.service.enqueue(manualItem.id, 'auto');
+  assert.equal(f.service.enqueue(manualItem.id, 'manual'), manual);
+  assert.equal(f.store.get('SELECT origin FROM summaries WHERE id=?', manual)!.origin, 'manual');
+  const source = f.source();
+  f.store.enqueue('source', source.id, source.generation);
+  let sourceReads = 0;
+  f.engine.adapters.feed = async () => {
+    sourceReads++;
+    return { unchanged: false, items: [] };
+  };
+  f.service.adapter.run = async () => result();
+  await f.engine.cycle();
+  assert.equal(sourceReads, 0);
+  assert.equal(f.store.get('SELECT status FROM summaries WHERE id=?', manual)!.status, 'succeeded');
+  assert.equal(f.store.get('SELECT status FROM summaries WHERE id=?', auto)!.status, 'queued');
+  assert.deepEqual(f.store.all('SELECT code FROM events WHERE action=? AND resource=?', 'summary_stage', manual).map((r) => r.code), ['summarizing']);
+  await f.engine.cycle();
+  assert.equal(sourceReads, 1);
+  assert.equal(f.store.get('SELECT status FROM summaries WHERE id=?', auto)!.status, 'succeeded');
+});
 
 test('summary is disabled without credentials and does not block original delivery', async (t) => {
   const f = fixture(t),
@@ -81,7 +107,7 @@ test('explicit source consent is required; valid content cache avoids repeated c
   await f.service.cycle('demo');
   assert.equal(f.service.describe().calls, 1);
   assert.equal(f.store.get('SELECT input FROM summaries WHERE id=?', id)!.input, '');
-  assert.equal(f.service.list(item.id)[0].output, null);
+  assert.equal(f.service.list(item.id)[0].output!.item_id, item.id);
 });
 test('repair calls share the persistent request cap; failures are never free', async (t) => {
   const f = setup(t),
@@ -212,18 +238,17 @@ test('oversize text is visible as failed without sending any bytes', async (t) =
   assert.equal(f.service.list(item.id)[0].error, 'SUMMARY_CONTENT_TOO_LONG');
   assert.equal(f.service.describe().calls, 0);
 });
-test('AI follow-up has an independent frozen delivery and send retry never calls a model', async (t) => {
+test('FR-31: the original delivery waits for a summary and retries the same snapshot without model calls', async (t) => {
   const f = setup(t, 'manual', true),
     item = f.item();
   f.store.changeDeliveryMode(f.s.id, 'digest');
   f.service.enqueue(item.id);
   await f.service.cycle('demo');
   const row = f.store.get<SummaryRow>('SELECT * FROM summaries')!;
-  assert.ok(row.output_item);
-  const output = f.store.get('SELECT * FROM deliveries WHERE item_id=?', row.output_item)!;
+  assert.equal(row.output_item, '');
+  const output = f.store.get('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
   assert.equal(output.mode, 'immediate');
   assert.match(String(output.snapshot), /^测试标题（模拟摘要）\n\n1\. /);
-  f.store.run("UPDATE deliveries SET status='sent' WHERE item_id=?", item.id);
   const delivery = f.store.claimDelivery('demo')!;
   f.store.finishDelivery(delivery, { status: 'unknown' });
   f.store.resolveDelivery(delivery.id, 'retry', 'demo');
@@ -232,18 +257,22 @@ test('AI follow-up has an independent frozen delivery and send retry never calls
 });
 test('disabling summary push cancels unsent supplement but retains usable web result', async (t) => {
   const f = setup(t, 'manual', true),
-    item = f.item();
+    item = f.item(false);
   f.service.enqueue(item.id);
   await f.service.cycle('demo');
+  const current = f.service.list(item.id)[0];
+  f.service.pushLatest(item.id, current.id, current.revision);
   f.service.authorize(f.s.id, 'manual', false, true);
   assert.equal(f.service.list(item.id)[0].output!.status, 'cancelled');
   assert.ok(f.service.list(item.id)[0].result);
 });
 test('retention clears input, result and supplemental notification together', async (t) => {
   const f = setup(t, 'manual', true),
-    item = f.item();
+    item = f.item(false);
   f.service.enqueue(item.id);
   await f.service.cycle('demo');
+  const current = f.service.list(item.id)[0];
+  f.service.pushLatest(item.id, current.id, current.revision);
   const output = f.store.get<SummaryRow>('SELECT * FROM summaries')!.output_item;
   f.advance(8 * 86400000);
   f.store.cleanup();
@@ -367,9 +396,11 @@ test('missing optional model key degrades to unavailable without breaking origin
 });
 test('v3 backup restores usage but disables model consent and clears supplemental snapshots', async (t) => {
   const f = setup(t, 'manual', true),
-    item = f.item();
+    item = f.item(false);
   f.service.enqueue(item.id);
   await f.service.cycle('demo');
+  const current = f.service.list(item.id)[0];
+  f.service.pushLatest(item.id, current.id, current.revision);
   const output = f.store.get<SummaryRow>('SELECT * FROM summaries')!.output_item;
   f.advance(1);
   // A second content identity is pending at backup time.
@@ -445,7 +476,7 @@ test('empty feed descriptions record a visible failure without starving later au
 });
 test('changing Feishu recipient invalidates queued and completed summary disclosure', async (t) => {
   const f = setup(t, 'manual', true),
-    item = f.item();
+    item = f.item(false);
   f.service.enqueue(item.id);
   const changed = new SummaryService(
     f.store,
@@ -462,6 +493,8 @@ test('changing Feishu recipient invalidates queued and completed summary disclos
   changed.authorize(f.s.id, 'manual', true, true);
   changed.enqueue(item.id);
   await changed.cycle('another-recipient');
+  const current = changed.list(item.id)[0];
+  changed.pushLatest(item.id, current.id, current.revision);
   assert.equal(
     f.store.get(
       "SELECT destination FROM deliveries WHERE item_id IN (SELECT output_item FROM summaries WHERE output_item<>'')",

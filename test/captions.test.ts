@@ -202,7 +202,7 @@ test('YT-I03: durable caption task, cache and timestamped supplement share the o
   assert.ok(saved.material);
   const message = f.store.get<{ snapshot: string }>(
     'SELECT snapshot FROM deliveries WHERE item_id=?',
-    saved.output_item,
+    f.item.id,
   )!.snapshot;
   assert.match(message, /1\. 原文要点/);
   assert.doesNotMatch(message, /t=10s|原文引用/);
@@ -231,20 +231,20 @@ test('YT-I03: failed model retry reuses cached transcript without hiding earlier
   assert.equal(f.service.describe().calls, 2);
 });
 
-test('YT-I03: scope round trips regenerate a fresh supplement while retaining the same call ledger', async (t) => {
+test('YT-I03: scope round trips cancel old delivery without duplicating automatic notifications', async (t) => {
   const f = setup(t),
     id = f.service.enqueue(f.item.id);
   await f.service.cycle('demo');
-  const previous = f.store.get<SummaryRow>('SELECT * FROM summaries WHERE id=?', id)!.output_item;
+  const previous = f.service.list(f.item.id)[0].output!.id;
   f.service.authorize(f.source.id, 'manual', true, true, 'feed');
   f.service.authorize(f.source.id, 'manual', true, true, 'captions');
   assert.equal(f.service.enqueue(f.item.id), id);
   await f.service.cycle('demo');
   const row = f.store.get<SummaryRow>('SELECT * FROM summaries WHERE id=?', id)!;
   assert.equal(row.status, 'succeeded', row.error);
-  assert.notEqual(row.output_item, previous);
+  assert.equal(row.output_item, '');
   assert.equal(
-    f.store.get('SELECT status FROM deliveries WHERE item_id=?', previous)!.status,
+    f.store.get('SELECT status FROM deliveries WHERE id=?', previous)!.status,
     'cancelled',
   );
   assert.equal(f.service.describe().calls, 2);
@@ -255,7 +255,7 @@ test('YT-I03: scope round trips regenerate a fresh supplement while retaining th
   assert.doesNotThrow(() => f.service.authorize(f.source.id, 'manual', false, true, 'feed'));
 });
 
-test('YT-I04: no captions/network failure consumes no model budget and original notification still sends', async (t) => {
+test('YT-I04: unavailable video content consumes no model budget and never sends its description', async (t) => {
   for (const code of ['YOUTUBE_NO_CAPTIONS', 'YOUTUBE_NETWORK_ERROR', 'YOUTUBE_ACCESS_BLOCKED']) {
     const f = setup(t);
     f.service.captions!.fetch = async () => {
@@ -267,8 +267,10 @@ test('YT-I04: no captions/network failure consumes no model budget and original 
     assert.equal(f.service.describe().calls, 0);
     assert.equal(
       f.store.get('SELECT status FROM deliveries WHERE item_id=?', f.item.id)!.status,
-      'sent',
+      'pending',
     );
+    assert.equal(f.store.get('SELECT snapshot FROM deliveries WHERE item_id=?', f.item.id)!.snapshot, '');
+    assert.equal(f.store.claimDelivery('demo'), undefined);
     await f.engine.cycle();
     assert.equal(f.service.list(f.item.id)[0].status, 'failed');
   }

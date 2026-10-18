@@ -37,7 +37,7 @@ def check_duration(info):
 def transcribe(request):
     from yt_dlp import YoutubeDL
     from yt_dlp.globals import plugin_dirs
-    from faster_whisper import WhisperModel
+    from faster_whisper import WhisperModel, BatchedInferencePipeline
     if version("faster-whisper") != "1.2.1" or version("av") != "16.1.0":
         raise TranscribeError("YOUTUBE_DEPENDENCY_VERSION")
     plugin_dirs.value = []
@@ -64,7 +64,7 @@ def transcribe(request):
             "extractor_retries": 0, "fragment_retries": 2,
             "http_chunk_size": 1024 * 1024,
             "remote_components": [], "js_runtimes": {"node": {"path": request["node"]}},
-            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+            "format": "bestaudio[abr<=64]/bestaudio",
             "outtmpl": str(Path(folder) / "audio.%(ext)s"), "max_filesize": MAX_BYTES,
             "progress_hooks": [hook], "overwrites": False,
         }) as ydl:
@@ -84,8 +84,11 @@ def transcribe(request):
         progress("transcribing")
         model = WhisperModel(request["model"], device="cpu", compute_type="int8",
                              cpu_threads=4, local_files_only=True)
-        segments, detected = model.transcribe(str(audio), beam_size=3, vad_filter=True,
-                                              condition_on_previous_text=False)
+        # Batch speech windows without reducing the beam search or sampling the audio.
+        segments, detected = BatchedInferencePipeline(model).transcribe(
+            str(audio), batch_size=4, beam_size=3, vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 2000},
+            condition_on_previous_text=False, without_timestamps=False)
         cues = []
         size = 0
         for segment in segments:

@@ -106,7 +106,7 @@ const segments = computed(
         <span class="badge" :class="detail.delivery?.status">{{
           detail.delivery?.resolution === 'user_acknowledged'
             ? '已人工核查'
-            : labels[detail.delivery?.status || 'discovered']
+            : detail.delivery?.error === 'SUMMARY_REQUIRED' ? '等待摘要' : labels[detail.delivery?.status || 'discovered']
         }}</span
         ><a v-if="detail.url" :href="detail.url" target="_blank" rel="noopener noreferrer"
           >查看来源<ExternalLink :size="14"

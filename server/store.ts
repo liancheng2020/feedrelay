@@ -517,16 +517,18 @@ export class Store {
         eligible.length && eligible.every((s) => s.delivery_mode === 'digest')
           ? 'digest'
           : 'immediate';
+      const summaryRequired = eligible.some((s) => s.summary_mode !== 'off');
       this.run(
-        'INSERT OR IGNORE INTO deliveries(id,item_id,destination,snapshot,available,created,mode,status) VALUES (?,?,?,?,?,?,?,?)',
+        'INSERT OR IGNORE INTO deliveries(id,item_id,destination,snapshot,available,created,mode,status,error) VALUES (?,?,?,?,?,?,?,?,?)',
         randomUUID(),
         item.id,
         destination,
-        text,
+        summaryRequired ? '' : text,
         this.now(),
         this.now(),
         mode,
         mode === 'digest' ? 'digest_wait' : 'pending',
+        summaryRequired ? 'SUMMARY_REQUIRED' : '',
       );
     }
     return item;
@@ -553,7 +555,7 @@ export class Store {
       )
         return;
       const d = this.get<Delivery>(
-        `SELECT * FROM deliveries WHERE status IN ('pending','retry_wait') AND available<=? AND attempt<5 ORDER BY created LIMIT 1`,
+        `SELECT * FROM deliveries WHERE status IN ('pending','retry_wait') AND snapshot<>'' AND error<>'SUMMARY_REQUIRED' AND available<=? AND attempt<5 ORDER BY created LIMIT 1`,
         this.now(),
       );
       if (!d) return;
@@ -643,7 +645,7 @@ export class Store {
         )
           throw new AppError('SOURCE_DISABLED', 409);
         this.run(
-          `UPDATE deliveries SET status=?,destination=?,attempt=0,available=?,error='',resolution='manual_retry' WHERE id=?`,
+          `UPDATE deliveries SET status=?,destination=?,attempt=0,available=?,error='',resolution=CASE WHEN resolution LIKE 'summary:%' THEN resolution ELSE 'manual_retry' END WHERE id=?`,
           d.mode === 'digest' ? 'digest_wait' : 'pending',
           destination,
           this.now(),

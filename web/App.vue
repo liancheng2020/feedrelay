@@ -202,6 +202,7 @@ const labels: Record<string, string> = {
   batched: '已纳入日报',
 };
 const errors: Record<string, string> = {
+  SUMMARY_REQUIRED: '等待摘要完成后推送',
   YOUTUBE_FEED_NOT_READY: '订阅接口暂不可用（404）',
   YOUTUBE_HTTP_404: '订阅接口暂不可用（404）',
   YOUTUBE_HTTP_500: '订阅接口暂不可用（500）',
@@ -532,7 +533,7 @@ function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'cont
       field === 'content' && mode === 'off'
         ? `仅保存${content === 'captions' ? '字幕' : '简介'}选择，不开启摘要或外部请求。启用时仍需确认授权。`
         : mode === 'off'
-          ? '将取消排队摘要、清理结果及未发AI补充。已发出的外部请求或消息无法撤回。'
+          ? '将取消排队摘要并清理结果；等待摘要的通知不会改发原文。'
           : [
               demo.value ? '本环境为模拟，不连接外部服务。' : `${disclosure}将发送到 DeepSeek。`,
               content === 'captions'
@@ -543,9 +544,9 @@ function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'cont
               mode === 'auto'
                 ? '只自动处理授权后新发现且已排队提醒的条目，不处理历史收件箱。'
                 : '仅在你确认具体条目后处理。',
-              notify
-                ? `另行即时私聊发送AI补充，独立于原即时/日报，不会重发原通知。接收人：${recipient}。`
-                : '摘要仅在详情页查看，不追加私聊消息。',
+              s.notify
+                ? `摘要完成后按订阅投递方式推送，不先发送原文。接收人：${recipient}。`
+                : '摘要仅在详情页查看。',
               '切换正文范围使旧结果失效。失败、修复和重试均占用累计预算；引用校验不保证语义正确。',
             ]
               .filter(Boolean)
@@ -597,7 +598,7 @@ function pushSummary(row: SummaryView) {
   if (!id) return;
   confirmation.value = {
     title: `推送最新摘要到${pushLabel.value}？`,
-    text: `发送当前已生成的摘要、引文与来源链接到 ${overview.value?.connections.recipient || '当前接收人'}，不重新调用模型。同一版本已排队或已发送时不会重复发送。`,
+    text: `发送标题和摘要要点到 ${overview.value?.connections.recipient || '当前接收人'}，不重新调用模型。同一版本已排队或已发送时不会重复发送。`,
     run: async () => {
       await api(`/items/${id}/summary/push`, 'POST', {
         confirmed: true,
@@ -881,7 +882,7 @@ onUnmounted(() => {
                   <span class="badge" :class="item.status">{{
                     item.resolution === 'user_acknowledged'
                       ? '已人工核查'
-                      : labels[item.status || 'discovered']
+                      : item.error === 'SUMMARY_REQUIRED' ? '等待摘要' : labels[item.status || 'discovered']
                   }}</span>
                 </td>
                 <td class="update-time" data-label="时间">
@@ -1039,14 +1040,6 @@ onUnmounted(() => {
                       }}
                     </option>
                   </select></label
-                >
-                <label v-if="s.summary_mode !== 'off'" class="check"
-                  ><input
-                    type="checkbox"
-                    :checked="!!s.summary_notify"
-                    :disabled="busy"
-                    @change="changeSummary(s, $event, 'notify')"
-                  />私聊追加AI补充</label
                 >
               </div>
               <div class="source-times">

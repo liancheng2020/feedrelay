@@ -1,5 +1,9 @@
 # 技术设计
 
+FR-31优先于旧补充通知设计：Store.put为AI来源创建空快照原投递，error=SUMMARY_REQUIRED；SummaryService.prepareDeliveries仅在最新有效摘要成功后填充标题/编号要点，resolution记录summary:<id>。即时claim和日报冻结均排除未就绪快照；失败不降级。发送重试保留快照与投递ID，不再请求模型。人工推送相同摘要复用原记录；仅采集/历史条目的明确手动推送仍可建立独立快照。摘要授权失效取消准备好的未发投递及相关日报分片，保留记录。无schema升级。
+
+FR-30：本地ASR使用BatchedInferencePipeline，batch_size=4、beam_size=3、CPU int8/4线程；保留逐段时间戳与完整音频，优先<=64kbps音轨，缺少时回退可用音轨。手动摘要优先于自动摘要；已有自动排队任务可原地提升优先级，有手动任务时不启动下一条来源检查，但不打断正在运行的网络请求或转写。summary_stage事件仅记录阶段变化，便于区分提取与模型耗时。无新队列、schema或依赖。
+
 FR-27：DELETE /api/items/:id要求会话、Origin/CSRF和confirmed=true；事务内复用expireItem(id,true)，另以meta的item-deleted:<id>标记列表隐藏与详情404。保留items.key，后续put遇到expired条目不恢复正文或投递；沿用既有保留周期，不保证超过去重保留窗口后永久屏蔽。正文/摘要清理与未发快照失效原子执行，模型调用账本不删除；运行中的摘要受现有token/授权围栏阻止再次发布。无schema升级。
 
 FR-24：在原CaptionAdapter中组合可选的本地ASR，仅YOUTUBE_NO_CAPTIONS/EMPTY_CAPTION触发；读取公开音频后由faster-whisper/PyAV直接解码，不依赖系统ffmpeg。复用Caption数据结构，新增transcribed类型及ASR模型标识，哈希与证据校验覆盖真实来源。原summary material缓存和调用账本保留。阶段进度写meta临时键供独立Web/Worker读取，结束删除；无新schema/队列。最长60分钟音频、100MB、转写30分钟硬超时、原48000码元全文上限；超限拒绝，不截断。仅字幕路径仍保持45秒提取限制；启用ASR的总任务上限增加以容纳本地计算，不增加模型请求预算。
