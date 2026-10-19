@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 for (const width of [1440, 390]) {
   test(`PG-02: page sizes, navigation and empty filters at ${width}px`, async ({ page }, info) => {

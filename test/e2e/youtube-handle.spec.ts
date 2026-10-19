@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('YouTube handle input: clear demo boundary, synthetic resolution and canonical paused source', async ({
   page,
@@ -16,7 +16,7 @@ test('YouTube handle input: clear demo boundary, synthetic resolution and canoni
   await editor.getByLabel('名称', { exact: true }).fill('Handle 合成验证');
   await editor.getByLabel('频道地址 / ID').fill('https://www.youtube.com/@MeiTouJun');
   await editor.getByRole('button', { name: '保存订阅源', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('演示模式不访问真实频道');
+  await expect(editor.getByRole('alert')).toContainText('演示模式不访问真实频道');
   await expect(editor).toBeVisible();
   await editor.getByLabel('频道地址 / ID').fill('https://www.youtube.com/@feedrelay-demo');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 test('reading: table, bookmarkable detail, evidence views and explicit idempotent summary push', async ({
   page,
 }, info) => {

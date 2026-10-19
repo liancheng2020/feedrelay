@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('desktop: browse, resolve uncertainty, manage source and settings', async ({ page }, info) => {
   const failures: string[] = [];

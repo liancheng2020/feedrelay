@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('captions: explicit scope confirmation, grounded timestamp links, revocation and mobile layout', async ({
   page,

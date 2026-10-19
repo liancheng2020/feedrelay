@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 async function login(page: import('@playwright/test').Page) {
   await page.goto('/');
   await page.getByLabel('管理密码').fill('demo');
