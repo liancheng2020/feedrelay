@@ -1,5 +1,7 @@
 # 技术设计
 
+FR-39：latestDelivery按created及rowid选取原item和summaries.output_item关联的最新delivery，并解析日报part状态。列表计数、分页和详情共用该关联，避免重复行。pushStateSql统一合并状态用于筛选与展示，保留原status和错误字段；无需迁移。
+
 FR-38：Aihot使用https://aihot.news/api/v1/dailies/latest，20秒请求上限、256KB响应上限、禁止重定向；只接收当天版次。meta保存enabled/startDate/nextCheck/lastDate/error，每小时重试并遵守Retry-After。复用worker租约和digest_batches唯一slot=aihot:日期，事务写入digest_part投递，分段不截断，沿用发送未知结果和预算限额。固定Asia/Shanghai 10:00独立于订阅汇总时间；禁用取消待发送，恢复备份默认关闭。不安装或运行第三方框架。
 
 FR-37：toggle在来源持续启用且notify变化时只更新通知开关、清理孤立投递并记事件，保留generation、游标、初始化和摘要授权。真正暂停/恢复仍沿用原取消及基线规则。当前自动摘要依赖新条目的投递任务，因此完整自动链路须同时开启notify与summary_mode=auto。

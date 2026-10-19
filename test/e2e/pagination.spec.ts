@@ -43,7 +43,7 @@ for (const width of [1440, 390]) {
     await expect(size).toBeEnabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await pager.screenshot({ path: info.outputPath(`pagination-${width}.png`) });
-    await page.getByRole('combobox', { name: '投递状态', exact: true }).selectOption('sent');
+    await page.getByRole('combobox', { name: '推送状态', exact: true }).selectOption('sent');
     await expect(rows).toHaveCount(0);
     await expect(pager).toContainText('0–0 / 0 条');
     await expect(pager.locator('.pagination-page')).toHaveText('1 / 1 页');

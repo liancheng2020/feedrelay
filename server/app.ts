@@ -19,6 +19,7 @@ import { Engine } from './engine.js';
 import { normalizeSource } from './adapters.js';
 import { advanceDemo } from './demo.js';
 import { listDigests } from './digest.js';
+import { latestDelivery, pushStateSql } from './push-state.js';
 import { exportSources, previewImport, applyImport } from './portable.js';
 
 const bool = (v: unknown) => {
@@ -335,8 +336,10 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     const status = String(ctx.query.status || ''),
       source = String(ctx.query.source || '');
     const joins =
-      'items i LEFT JOIN deliveries d ON d.item_id=i.id LEFT JOIN deliveries p ON p.id=d.part_id';
-    const where = `WHERE i.kind NOT IN ('digest','summary') AND NOT EXISTS(SELECT 1 FROM meta m WHERE m.key='item-deleted:' || i.id) AND (?='' OR COALESCE(p.status,d.status,'discovered')=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
+      `items i LEFT JOIN deliveries d ON d.id=${latestDelivery('i.id')} LEFT JOIN deliveries p ON p.id=d.part_id`;
+    const statusSql = ['unpublished', 'waiting', 'sending', 'sent', 'attention'].includes(status)
+      ? pushStateSql : "COALESCE(p.status,d.status,'discovered')";
+    const where = `WHERE i.kind NOT IN ('digest','summary') AND NOT EXISTS(SELECT 1 FROM meta m WHERE m.key='item-deleted:' || i.id) AND (?='' OR ${statusSql}=?) AND (?='' OR EXISTS(SELECT 1 FROM source_items si WHERE si.item_id=i.id AND si.source_id=?))`;
     const params = [status, status, source, source];
     const total = store.get<{ n: number }>(`SELECT count(*) n FROM ${joins} ${where}`, ...params)!.n;
     const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
@@ -347,7 +350,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       items: store
         .all<
           Item & Partial<Delivery>
-        >(`SELECT i.*,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY COALESCE(i.received,i.published,i.discovered) DESC,i.discovered DESC,i.rowid DESC LIMIT ? OFFSET ?`, ...params, pageSize, (page - 1) * pageSize)
+        >(`SELECT i.*,${pushStateSql} AS pushStatus,COALESCE(p.id,d.id) AS delivery_id,COALESCE(p.status,d.status) status,COALESCE(p.attempt,d.attempt) attempt,COALESCE(p.error,d.error) error,COALESCE(p.sent,d.sent) sent,COALESCE(p.available,d.available) available,COALESCE(p.resolution,d.resolution) resolution,d.mode,d.batch_id FROM ${joins} ${where} ORDER BY COALESCE(i.received,i.published,i.discovered) DESC,i.discovered DESC,i.rowid DESC LIMIT ? OFFSET ?`, ...params, pageSize, (page - 1) * pageSize)
         .map((i) => {
           const summary = engine.summaries.list(i.id).find((row) => row.current);
           return {
@@ -369,7 +372,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     const item = store.get<Item>('SELECT * FROM items WHERE id=?', String(ctx.params.id));
     if (!item || store.get('SELECT 1 FROM meta WHERE key=?', `item-deleted:${item.id}`))
       throw new AppError('ITEM_NOT_FOUND', 404);
-    let d = store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id);
+    let d = store.get<Delivery>(`SELECT * FROM deliveries WHERE id=${latestDelivery('?')}`, item.id, item.id);
     if (d?.part_id) d = store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.part_id);
     ctx.body = {
       ...item,

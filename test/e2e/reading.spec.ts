@@ -10,7 +10,7 @@ test('reading: table, bookmarkable detail, evidence views and explicit idempoten
   await page.getByRole('button', { name: '登录', exact: true }).click();
   const table = page.getByRole('table', { name: '更新记录' });
   await expect(table.getByRole('columnheader', { name: '标题', exact: true })).toBeVisible();
-  await expect(table.getByRole('columnheader', { name: '投递状态', exact: true })).toBeVisible();
+  await expect(table.getByRole('columnheader', { name: '推送状态', exact: true })).toBeVisible();
   const session = await (await page.request.get('/api/session')).json();
   const headers = { Origin: 'http://127.0.0.1:8799', 'X-CSRF-Token': session.csrf };
   expect(
@@ -27,7 +27,7 @@ test('reading: table, bookmarkable detail, evidence views and explicit idempoten
     .click();
   const detail = page.getByRole('region', { name: '内容详情' });
   await expect(page).toHaveURL(/#items\/[a-f0-9-]+$/);
-  await expect(detail.getByText('基于视频字幕 · 不含画面', { exact: true })).toBeVisible();
+  await expect(detail.getByText(/^(基于视频字幕 · 不含画面|字幕优先 · 无字幕时本地转写)$/)).toBeVisible();
   await expect(detail.getByText('本条为合成演示内容，不代表真实视频或新闻。')).toHaveCount(0);
   await detail.getByRole('button', { name: '生成摘要', exact: true }).click();
   const confirm = page.getByRole('dialog', { name: '生成当前内容摘要？', exact: true });

@@ -64,6 +64,7 @@ interface Item {
   received: number | null;
   expired: number;
   status?: string;
+  pushStatus?: string;
   error?: string;
   resolution?: string;
   summaryStatus?: string;
@@ -196,10 +197,10 @@ const preferences = ref<Prefs>({
   digestTime: '10:30',
 });
 const labels: Record<string, string> = {
-  discovered: '仅采集',
+  discovered: '未推送',
   pending: '待发送',
   sending: '发送中',
-  sent: '已接受',
+  sent: '已推送',
   retry_wait: '等待重试',
   failed: '失败',
   unknown: '待核查',
@@ -295,9 +296,9 @@ const errors: Record<string, string> = {
   DELIVERY_NOT_RESOLVABLE: '记录状态已变化，请刷新查看。',
 };
 const explain = (code: string) => errors[code] || code;
-const deliveryLabels = Object.fromEntries(
-  Object.entries(labels).filter(([key]) => !['running', 'succeeded', 'batched'].includes(key)),
-);
+const deliveryLabels: Record<string, string> = {
+  unpublished: '未推送', waiting: '待推送', sending: '推送中', sent: '已推送', attention: '需处理',
+};
 const zonedTime = (value: number, zone: string) =>
   new Date(value).toLocaleString('zh-CN', { timeZone: zone, hour12: false });
 const time = (value: number | string | null | undefined) =>
@@ -818,16 +819,16 @@ onUnmounted(() => {
       <template v-if="view === 'updates'">
         <section class="metrics" aria-label="投递概况">
           <div>
-            <span>收录内容</span><strong>{{ overview?.stats.items || 0 }}</strong>
+            <span>已采集</span><strong>{{ overview?.stats.items || 0 }}</strong>
           </div>
           <div>
-            <span>待发送</span><strong>{{ overview?.stats.pending || 0 }}</strong>
+            <span>待推送</span><strong>{{ overview?.stats.pending || 0 }}</strong>
           </div>
           <div>
-            <span>待人工核查</span><strong class="amber">{{ overview?.stats.unknown || 0 }}</strong>
+            <span>需核查</span><strong class="amber">{{ overview?.stats.unknown || 0 }}</strong>
           </div>
           <div>
-            <span>今日发送尝试</span
+            <span>今日推送尝试</span
             ><strong
               >{{ overview?.stats.today || 0
               }}<small> / {{ overview?.settings.dailyLimit }}</small></strong
@@ -841,13 +842,13 @@ onUnmounted(() => {
               <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
             </select></label
           ><label
-            >投递状态<select v-model="statusFilter" @change="filter">
+            >推送状态<select v-model="statusFilter" @change="filter">
               <option value="">全部状态</option>
               <option v-for="(name, key) in deliveryLabels" :key="key" :value="key">
                 {{ name }}
               </option>
             </select></label
-          ><span class="muted">{{ total }} 条记录</span>
+          >
         </div>
         <div v-if="!items.length" class="empty">
           <Inbox :size="34" />
@@ -862,7 +863,7 @@ onUnmounted(() => {
                 <th scope="col">标题</th>
                 <th scope="col" class="source-column">来源</th>
                 <th scope="col">AI 摘要</th>
-                <th scope="col">投递状态</th>
+                <th scope="col">推送状态</th>
                 <th scope="col">时间 ↓</th>
                 <th scope="col"><span class="sr-only">操作</span></th>
               </tr>
@@ -888,14 +889,10 @@ onUnmounted(() => {
                     >{{ summaryState(item.summaryStatus, item.summaryError).label }}</span
                   >
                 </td>
-                <td data-label="投递">
-                  <span class="badge" :class="item.status">{{
-                    item.resolution === 'user_acknowledged'
-                      ? '已人工核查'
-                      : item.error === 'SUMMARY_REQUIRED'
-                        ? '等待摘要'
-                        : labels[item.status || 'discovered']
-                  }}</span>
+                <td data-label="推送">
+                  <span class="badge" :class="item.status"
+                    :title="item.status === 'sent' ? '推送接口已确认接受，不代表已读' : item.error ? explain(item.error) : ''"
+                    >{{ deliveryLabels[item.pushStatus || 'unpublished'] }}</span>
                 </td>
                 <td class="update-time" data-label="时间">
                   <time>{{ time(item.received || item.published || item.discovered) }}</time>
