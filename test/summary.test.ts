@@ -232,11 +232,28 @@ test('automatic mode excludes history and silent baselines and schedules each it
 test('oversize text is visible as failed without sending any bytes', async (t) => {
   const f = setup(t),
     item = f.item();
-  f.store.run('UPDATE items SET text=? WHERE id=?', '长'.repeat(8001), item.id);
+  f.store.run('UPDATE items SET text=? WHERE id=?', '长'.repeat(20001), item.id);
   f.service.enqueue(item.id);
   await f.service.cycle('demo');
   assert.equal(f.service.list(item.id)[0].error, 'SUMMARY_CONTENT_TOO_LONG');
   assert.equal(f.service.describe().calls, 0);
+});
+test('MAIL-03: long newsletter reaches the model intact and retries an old length failure', async (t) => {
+  const f = setup(t), item = f.item();
+  const text = '长'.repeat(19970) + '会议于2026年10月16日召开，计划于11月发布。';
+  f.store.run('UPDATE items SET text=? WHERE id=?', text, item.id);
+  const id = f.service.enqueue(item.id);
+  f.store.run("UPDATE summaries SET status='failed',error='SUMMARY_CONTENT_TOO_LONG',input='' WHERE id=?", id);
+  let calls = 0;
+  f.service.adapter.run = async (input) => {
+    assert.equal(input.text, text);
+    calls++;
+    return result();
+  };
+  f.service.enqueue(item.id, 'manual', true);
+  await f.service.cycle('demo');
+  assert.equal(calls, 1);
+  assert.equal(f.service.list(item.id)[0].status, 'succeeded');
 });
 test('FR-31: the original delivery waits for a summary and retries the same snapshot without model calls', async (t) => {
   const f = setup(t, 'manual', true),

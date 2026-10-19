@@ -33,6 +33,7 @@ test(
           else if (command === 'ID') ok('* ID NIL\r\n');
           else if (command === 'EXAMINE')
             ok('* FLAGS (\\Seen)\r\n* 1 EXISTS\r\n* OK [UIDVALIDITY 9]\r\n* OK [UIDNEXT 2]\r\n');
+          else if (command === 'UID' && upper.includes('SEARCH')) ok('* SEARCH 1\r\n');
           else if (command === 'UID' && upper.includes('BODYSTRUCTURE'))
             ok(
               '* 1 FETCH (UID 1 BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 4 1))\r\n',

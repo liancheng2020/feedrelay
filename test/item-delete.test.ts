@@ -33,7 +33,9 @@ test('RD-12: deleting an update erases its summary and pending pushes, preserves
 });
 
 test('RD-13: item delete API requires session, CSRF and confirmation, updates list totals and denies old detail links', async (t) => {
-  const f = fixture(t), source = f.source(), item = f.store.put(incoming(), [source], false, 'demo');
+  const f = fixture(t), source = f.source(), item = f.store.put(incoming(), [source], true, 'demo');
+  const delivery = f.store.claimDelivery('demo')!;
+  f.store.finishDelivery(delivery, { status: 'unknown', code: 'SEND_UNCONFIRMED' });
   const server = createApp(f.store, f.config, f.engine).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -50,13 +52,62 @@ test('RD-13: item delete API requires session, CSRF and confirmation, updates li
   assert.equal((await api(`/items/${item.id}`,'DELETE',{},'bad-token')).status,403);
   assert.equal((await api(`/items/${item.id}`,'DELETE',{})).status,400);
   assert.equal((await api('/items')).status,200);
+  assert.equal((await (await api('/overview')).json()).stats.unknown, 1);
   assert.equal((await api(`/items/${item.id}`,'DELETE',{confirmed:true})).status,200);
   const list = await (await api(`/items?source=${source.id}`)).json();
   assert.equal(list.total,0); assert.deepEqual(list.items,[]);
+  const stats = (await (await api('/overview')).json()).stats;
+  assert.equal(stats.unknown, 0);
+  assert.equal(stats.pending, 0);
+  assert.equal(stats.today, 1);
+  assert.equal((await (await api('/sources')).json())[0].backlog, 0);
+  assert.equal(f.store.get('SELECT status FROM deliveries WHERE id=?', delivery.id)!.status, 'unknown');
   assert.equal((await api(`/items/${item.id}`)).status,404);
   assert.equal((await api(`/items/${item.id}`,'DELETE',{confirmed:true})).status,200);
   assert.equal((await api('/items/missing','DELETE',{confirmed:true})).status,404);
   assert.equal(f.store.source(source.id).enabled,1);
+});
+
+test('RD-16: deleting a summary source excludes its unknown push while retaining other unresolved deliveries', async (t) => {
+  const f = fixture(t), source = f.source(), service = f.engine.summaries;
+  service.configure({ enabled: true, maxCalls: 10, maxCostCny: 1, confirmed: true });
+  service.authorize(source.id, 'manual', false, true, 'captions');
+  const item = f.store.put(incoming('youtube:abcdefghijk'), [source], false, 'demo');
+  service.enqueue(item.id);
+  await service.cycle('demo');
+  const row = service.list(item.id)[0];
+  service.pushLatest(item.id, row.id, row.revision);
+  const summary = f.store.claimDelivery('demo')!;
+  f.store.finishDelivery(summary, { status: 'unknown' });
+  const other = f.store.put(incoming('other'), [source], true, 'demo');
+  f.store.run("UPDATE deliveries SET status='unknown' WHERE item_id=?", other.id);
+  assert.equal(f.store.stats().unknown, 2);
+  f.store.deleteItem(item.id);
+  assert.equal(f.store.stats().unknown, 1);
+  assert.equal(service.describe().calls, 1);
+  assert.equal(f.store.get('SELECT status FROM deliveries WHERE id=?', summary.id)!.status, 'unknown');
+  f.store.deleteItem(other.id);
+  assert.equal(f.store.stats().unknown, 0);
+  const reopened = new Store(f.dir, 'demo', f.now);
+  try {
+    assert.equal(reopened.stats().unknown, 0);
+    assert.equal(reopened.get("SELECT count(*) n FROM deliveries WHERE status='unknown'")!.n, 2);
+  } finally { reopened.close(); }
+});
+
+test('RD-17: deleting a digest member excludes the expired unknown part from current statistics', (t) => {
+  const f = fixture(t);
+  f.store.setSettings({ ...f.store.settings(), digestTime: '12:00' });
+  const source = f.store.changeDeliveryMode(f.source().id, 'digest');
+  const item = f.store.put(incoming(), [source], true, 'demo');
+  freezeDigest(f.store, 'demo');
+  const part = f.store.claimDelivery('demo')!;
+  f.store.finishDelivery(part, { status: 'unknown' });
+  assert.equal(f.store.stats().unknown, 1);
+  f.store.deleteItem(item.id);
+  assert.equal(f.store.stats().unknown, 0);
+  assert.equal(f.store.stats().today, 1);
+  assert.equal(f.store.get('SELECT status FROM deliveries WHERE id=?', part.id)!.status, 'unknown');
 });
 
 test('RD-14: deleting a member prevents its frozen digest part from being delivered', (t) => {

@@ -55,6 +55,44 @@ test('SP-01: collection waits for complete video summary, then sends exactly one
   assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 1);
 });
 
+test('SP-07: email notification toggle preserves cursor and consent; new mail summarizes before one send', async (t) => {
+  const sent: string[] = [];
+  let upper = 100;
+  const f = fixture(t, {
+    send: async (text) => { sent.push(text); return { status: 'sent' }; },
+    mailbox: async () => ({ epoch: '1', upper,
+      headers: async (from, to) => from <= 101 && to >= 101
+        ? [{ uid: 101, sender: 'brief@example.com', subject: '新闻总结', received: f.now(), published: null }] : [],
+      body: async () => '市场今日出现波动，成交量有所上升。', close: async () => {},
+    }),
+  });
+  const s = f.source('email', false);
+  f.engine.summaries.configure({ enabled: true, maxCalls: 10, maxCostCny: 1, confirmed: true });
+  f.engine.summaries.authorize(s.id, 'auto', false, true);
+  f.store.enqueue('mailbox', 'default');
+  await f.run();
+  const before = f.store.source(s.id);
+  f.store.toggle(s.id, true, true);
+  const after = f.store.source(s.id);
+  for (const key of ['generation', 'boundary', 'initialized', 'summary_mode', 'summary_consent'] as const)
+    assert.equal(after[key], before[key]);
+  assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 0);
+  f.advance(1);
+  upper = 101;
+  f.store.enqueue('mailbox', 'default');
+  await f.run();
+  assert.equal(f.store.get('SELECT error FROM deliveries')!.error, 'SUMMARY_REQUIRED');
+  assert.equal(f.store.claimDelivery('demo'), undefined);
+  await f.engine.cycle();
+  assert.equal(sent.length, 0);
+  assert.equal(f.store.get('SELECT status FROM summaries')!.status, 'succeeded');
+  await f.engine.cycle();
+  await f.engine.cycle();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /\n\n1\. /);
+  assert.equal(f.engine.summaries.describe().calls, 1);
+});
+
 test('SP-02: failed generation stays blocked; explicit retry releases the same notification', async (t) => {
   const f = setup(t);
   const run = f.service.adapter.run;

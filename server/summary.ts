@@ -47,7 +47,7 @@ interface Policy {
   stamp: string;
 }
 const initial: Policy = { enabled: false, maxCalls: 0, maxCostCny: 0, stamp: '' };
-const MAX_BODY = 8000;
+const MAX_BODY = 20000;
 const scope = (kind: string) =>
   kind === 'youtube'
     ? 'YouTube Feed 简介（非视频全文）'

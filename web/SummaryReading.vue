@@ -54,7 +54,7 @@ const errors: Record<string, string> = {
   SUMMARY_GENERATION_FAILED: '摘要生成失败，未发布不完整结果。',
   SUMMARY_BUDGET_EXHAUSTED: '累计预算已用完，未继续调用。',
   SUMMARY_UNSUPPORTED_QUOTE: '引用无法在对应原文段落核实，未发布摘要。',
-  SUMMARY_CONTENT_TOO_LONG: '正文超过处理上限，未静默截断。',
+  SUMMARY_CONTENT_TOO_LONG: '正文超过20000字符上限，未截断内容。',
   SUMMARY_CONTENT_UNIT_TOO_LONG: '单段内容过长，无法在不截断证据的前提下处理。',
   SUMMARY_INTERRUPTED: '执行中断，可能已计费，不会自动重做。',
   SUMMARY_CONSENT_OR_CONTENT_CHANGED: '正文、范围或配置已变化，请重新生成。',

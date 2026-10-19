@@ -20,6 +20,7 @@ import { createCaptionAdapter } from './captions.js';
 import { resolveChannel, resolveDemoChannel, youtubeTransport } from './youtube.js';
 import { Weixin } from './weixin.js';
 import { createYoutubeFeed } from './youtube-feed.js';
+import { Aihot } from './aihot.js';
 
 export interface Adapters {
   resolveChannel: (input: string) => Promise<string>;
@@ -38,6 +39,7 @@ export class Engine {
   readonly weixin: Weixin;
   adapters: Adapters;
   summaries: SummaryService;
+  aihot: Aihot;
   constructor(
     public store: Store,
     public config: Config,
@@ -54,6 +56,10 @@ export class Engine {
     if (!config.demo && config.imap.enabled)
       store.run('INSERT OR IGNORE INTO meta VALUES (?,?)', 'mailbox_identity', identity);
     this.weixin = new Weixin(store, config);
+    this.aihot = new Aihot(store, config.demo ? async () => Response.json({ report: {
+      date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(store.now()),
+      sections: [{ items: [{ title: '演示 AI 日报', summary: '这是一条合成日报，不代表真实资讯。' }] }],
+    } }) : fetch);
     this.youtubeClient = youtubeTransport(config.youtubeProxy);
     this.summaries = new SummaryService(
       store,
@@ -114,6 +120,7 @@ export class Engine {
         String(this.store.now()),
       );
       this.store.cleanup();
+      if (!this.stopped && this.pushReady) await this.aihot.cycle(this.destination, this.feedAbort.signal);
       this.store.schedule();
       // One process owns the loop; two bounded reads avoid an unbounded catch-up burst.
       for (let n = 0; n < 2 && !this.stopped; n++) {
@@ -298,8 +305,8 @@ export class Engine {
         this.store.finishJob(job, new AppError('MAILBOX_REBASELINE_REQUIRED'));
         return;
       }
-      const upper = Math.min(mailbox.upper, cursor.uid + 100);
-      const headers = await mailbox.headers(cursor.uid + 1, upper);
+      const headers = await mailbox.headers(cursor.uid + 1, mailbox.upper);
+      const upper = mailbox.scannedUpper ?? mailbox.upper;
       for (const envelope of headers) {
         if (this.stopped) throw new AppError('WORKER_STOPPING', 503, true);
         const rules = this.activeMail().filter(

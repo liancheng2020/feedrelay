@@ -108,6 +108,7 @@ test('IMAP SDK contract enforces readOnly, UID, body-part download only', async 
       calls.push('EXAMINE');
       return { uidValidity: 1n, uidNext: 2 };
     },
+    async search() { return [1]; },
     async fetchAll(_range: string, query: unknown, opts: unknown) {
       assert.deepEqual(query, { uid: true, envelope: true, internalDate: true });
       assert.deepEqual(opts, { uid: true });
@@ -141,6 +142,31 @@ test('IMAP SDK contract enforces readOnly, UID, body-part download only', async 
   assert.equal(await box.body(1), '正文');
   await box.close();
   assert.deepEqual(calls, ['EXAMINE', 'PART', 'LOGOUT']);
+});
+test('MAIL-01: missing UIDNEXT uses last sequence UID and batches sparse UIDs safely', async () => {
+  const uids = Array.from({ length: 105 }, (_, i) => 1_000_000 + i * 10000);
+  const fake = {
+    on() {}, async connect() {}, async logout() {}, close() {},
+    async mailboxOpen() { return { exists: 105, uidValidity: 1n }; },
+    async fetchOne(sequence: string, query: unknown) {
+      assert.equal(sequence, '105');
+      assert.deepEqual(query, { uid: true });
+      return { uid: uids[104] };
+    },
+    async search() { return [...uids].reverse(); },
+    async fetchAll(range: string) {
+      assert.equal(range.split(',').length, 100);
+      // A message can disappear between SEARCH and FETCH; never skip the next batch.
+      return range.split(',').slice(1).map((uid) => ({ uid: Number(uid) }));
+    },
+  };
+  const box = await connectMailbox(readConfig({ FEEDRELAY_DEMO: '1', IMAP_ENABLED: '1',
+    IMAP_HOST: 'imap.163.com', IMAP_USER: 'test@163.com', IMAP_PASSWORD: 'synthetic' }),
+    (() => fake) as unknown as Parameters<typeof connectMailbox>[1]);
+  assert.equal(box.upper, uids[104]);
+  assert.equal((await box.headers(1, box.upper)).length, 99);
+  assert.equal(box.scannedUpper, uids[99]);
+  await box.close();
 });
 function realConfig() {
   return readConfig({

@@ -216,6 +216,13 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   router.get('/api/digests', (ctx) => {
     ctx.body = listDigests(store);
   });
+  router.get('/api/aihot', (ctx) => { ctx.body = engine.aihot.describe(); });
+  router.put('/api/aihot', (ctx) => {
+    const body = ctx.request.body as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') throw new AppError('INVALID_SETTINGS');
+    if (body.enabled && !engine.pushReady) throw new AppError('PUSH_NOT_READY');
+    ctx.body = engine.aihot.configure(body.enabled);
+  });
   router.get('/api/summaries/settings', (ctx) => {
     ctx.body = engine.summaries.describe();
   });

@@ -122,6 +122,7 @@ const authenticated = ref(false),
   demo = ref(false),
   csrf = ref(''),
   password = ref('');
+const aihot = ref({ enabled: false, startDate: '', nextCheck: 0, lastDate: '', error: '' });
 const routeItem = () => location.hash.match(/^#items\/([a-f0-9-]{36})$/i)?.[1] || '';
 const detailId = ref(routeItem());
 const initialView = location.hash.slice(1);
@@ -239,7 +240,7 @@ const errors: Record<string, string> = {
   ITEM_NOT_FOUND: '内容不存在或已清理，请返回列表。',
   SUMMARY_SOURCE_NOT_AUTHORIZED: '请在订阅源单独授权此来源的摘要外发。',
   INVALID_SUMMARY_POLICY: '请检查摘要开关、累计请求及费用预算。',
-  SUMMARY_CONTENT_TOO_LONG: '正文过长，本版最多处理8000个UTF-16码元，不会静默截断。',
+  SUMMARY_CONTENT_TOO_LONG: '正文超过20000字符上限，未截断内容。',
   INVALID_FEED_URL: '请输入有效的公开 RSS 地址。',
   PUBLIC_HTTPS_FEED_REQUIRED: '仅支持不含账号、查询参数或片段的公开 HTTPS Feed。',
   RSS_PRIVATE_ADDRESS: 'RSS 地址解析到私有或特殊网络，已阻止连接。',
@@ -388,6 +389,7 @@ async function load() {
   sources.value = await api<Source[]>('/sources');
   jobs.value = await api<Job[]>('/jobs');
   digests.value = await api<Digest[]>('/digests');
+  aihot.value = await api<typeof aihot.value>('/aihot');
   summaryConfig.value = await api<SummaryConfig>('/summaries/settings');
   const result = await api<{ items: Item[]; total: number; page: number }>(
     `/items?page=${page.value}&pageSize=${pageSize.value}&source=${encodeURIComponent(sourceFilter.value)}&status=${statusFilter.value}`,
@@ -967,23 +969,31 @@ onUnmounted(() => {
       </template>
       <template v-if="view === 'digests'">
         <div class="digest-schedule">
+          <CalendarDays :size="20" />
+          <span>AIHOT AI 日报 · 每天 10:00 · 北京时间</span>
+          <label class="check"><input type="checkbox" :checked="aihot.enabled" :disabled="busy"
+            @change="act(async () => { await api('/aihot', 'PUT', { enabled: !aihot.enabled }); })" />自动推送</label>
+          <a href="https://aihot.news/daily" target="_blank" rel="noreferrer">查看日报</a>
+        </div>
+        <p v-if="aihot.error" class="muted">{{ aihot.error === 'AIHOT_NOT_PUBLISHED' ? '今日日报尚未发布，稍后重试。' : '日报获取失败，稍后重试。' }}</p>
+        <p v-else-if="aihot.enabled && !aihot.lastDate" class="muted">首次推送：{{ aihot.startDate }} 10:00</p>
+        <div class="digest-schedule">
           <CalendarDays :size="20" /><span
-            >每天 {{ overview?.settings.digestTime }} · {{ overview?.settings.timezone }}</span
+            >订阅汇总 · 每天 {{ overview?.settings.digestTime }} · {{ overview?.settings.timezone }}</span
           ><button @click="switchView('settings')">调整时间</button>
         </div>
         <div v-if="!digests.length" class="empty">
           <CalendarDays :size="34" />
           <h2>暂无日报批次</h2>
-          <p>来源选择日报并启用推送后，新内容等待下一个本地时间窗口。</p>
-          <button @click="switchView('sources')">管理订阅源<ChevronRight :size="16" /></button>
+          <p>{{ aihot.enabled ? 'AIHOT 日报将在每天上午 10 点推送。' : '开启自动推送，接收 AIHOT 每日 AI 资讯。' }}</p>
         </div>
         <section class="digest-list">
           <article v-for="batch in digests" :key="batch.id">
             <header>
               <div>
-                <h2>{{ zonedTime(batch.cutoff, batch.timezone) }}</h2>
+                <h2>{{ batch.slot.startsWith('aihot:') ? 'AIHOT · ' : '' }}{{ zonedTime(batch.cutoff, batch.timezone) }}</h2>
                 <p class="muted">
-                  {{ batch.timezone }} · {{ batch.members }} 条内容 · {{ batch.total_parts }} 个分片
+                  {{ batch.timezone }} · {{ batch.slot.startsWith('aihot:') ? 'AI 日报' : `${batch.members} 条内容` }} · {{ batch.total_parts }} 个分片
                 </p>
               </div>
               <span v-if="!batch.total_parts" class="badge">无更新，不发送</span>

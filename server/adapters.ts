@@ -171,6 +171,7 @@ export interface Envelope {
 export interface MailSession {
   epoch: string;
   upper: number;
+  scannedUpper?: number;
   headers(from: number, to: number): Promise<Envelope[]>;
   body(uid: number): Promise<string>;
   close(): Promise<void>;
@@ -243,13 +244,28 @@ export async function connectMailbox(
   try {
     await client.connect();
     const box = await client.mailboxOpen(config.imap.folder, { readOnly: true });
+    // Some providers omit UIDNEXT; message sequence numbers are not UIDs.
+    const last = !box.uidNext && box.exists
+      ? await client.fetchOne(String(box.exists), { uid: true })
+      : undefined;
+    const upper = box.uidNext ? box.uidNext - 1 : last ? last.uid : 0;
+    if (box.exists && !upper) throw new AppError('MAILBOX_UID_UNAVAILABLE', 503, true);
+    let scannedUpper = upper;
     return {
       epoch: String(box.uidValidity),
-      upper: Math.max(0, (box.uidNext || 1) - 1),
+      upper,
+      get scannedUpper() { return scannedUpper; },
       async headers(from, to) {
+        scannedUpper = to;
         if (from > to) return [];
+        const found = await client.search({ uid: `${from}:${to}` }, { uid: true });
+        if (!found) throw new AppError('MAILBOX_SEARCH_FAILED', 503, true);
+        const uids = found.filter((uid) => uid >= from && uid <= to)
+          .sort((a, b) => a - b).slice(0, 100);
+        if (uids.length === 100) scannedUpper = uids[99];
+        if (!uids.length) return [];
         const messages = await client.fetchAll(
-          `${from}:${to}`,
+          uids.join(','),
           { uid: true, envelope: true, internalDate: true },
           { uid: true },
         );
@@ -261,7 +277,8 @@ export async function connectMailbox(
             received: new Date(m.internalDate || Date.now()).getTime(),
             published: m.envelope?.date ? new Date(m.envelope.date).getTime() || null : null,
           }))
-          .filter((m) => m.uid >= from && m.uid <= to);
+          .filter((m) => uids.includes(m.uid))
+          .sort((a, b) => a.uid - b.uid);
       },
       async body(uid) {
         const message = await client.fetchOne(

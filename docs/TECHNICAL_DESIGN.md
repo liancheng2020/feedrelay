@@ -1,5 +1,15 @@
 # 技术设计
 
+FR-38：Aihot使用https://aihot.news/api/v1/dailies/latest，20秒请求上限、256KB响应上限、禁止重定向；只接收当天版次。meta保存enabled/startDate/nextCheck/lastDate/error，每小时重试并遵守Retry-After。复用worker租约和digest_batches唯一slot=aihot:日期，事务写入digest_part投递，分段不截断，沿用发送未知结果和预算限额。固定Asia/Shanghai 10:00独立于订阅汇总时间；禁用取消待发送，恢复备份默认关闭。不安装或运行第三方框架。
+
+FR-37：toggle在来源持续启用且notify变化时只更新通知开关、清理孤立投递并记事件，保留generation、游标、初始化和摘要授权。真正暂停/恢复仍沿用原取消及基线规则。当前自动摘要依赖新条目的投递任务，因此完整自动链路须同时开启notify与summary_mode=auto。
+
+FR-36：SummaryService的入队和失败重试统一采用20000码元上限，与现有非字幕模型输入规模一致；不变更提示词、缓存指纹或历史用量。非字幕仍单次全文提炼，不引入分块/额外请求，前端超限提示同步。
+
+FR-35：EXAMINE缺少UIDNEXT时，以exists对应的最后一条序号FETCH UID确定上界；非空且无法取得UID则失败，不推进基线。UID SEARCH范围后排序取100个真实UID，再FETCH必要头部；scannedUpper记录搜索批次边界，即使SEARCH后邮件被删除也不越过后续批次。仅匹配正文读取，正文失败保留持久重试后再推进游标。无schema迁移。
+
+FR-34：stats.pending/unknown与sources.backlog的投递计数关联items并限定expired=0。原删除/到期逻辑已使原条目及衍生摘要/日报分片失效；仅修正查询范围，保留unknown状态、attempts、今日尝试和历史已发送计数，不改数据库内容或schema。
+
 FR-33：勾选框显式覆盖普通输入框的40px min-height，统一为16px、零外边距并居中对齐；SummarySettings说明使用通栏header与8px段落间隔，表单行距16px，移除说明/用量/按钮的叠加间距。只改样式和过时的推送说明，不改设置保存逻辑。
 
 FR-32：GET /api/items接受pageSize=10/20/50/100，其余取20；返回page/pageSize/total/items。先按同一筛选计数，再将page限制到有效范围，SQL参数化LIMIT/OFFSET；前端同步服务端页码，每页条数与原筛选共用回首页加载逻辑，无持久数据迁移。

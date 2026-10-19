@@ -163,6 +163,18 @@ test('mail baseline is header-only; old Date with new UID is discovered', async 
   assert.equal(f.store.get('SELECT count(*) n FROM deliveries')!.n, 1);
   assert.equal(f.store.get('SELECT uid FROM mailbox_cursors')!.uid, 102);
 });
+test('MAIL-02: sparse new UIDs are collected in one scan without reading unrelated bodies', async (t) => {
+  const f = mailboxFixture(t);
+  f.source('email');
+  await f.scan();
+  f.upper(1_359_808_379);
+  f.envelopes.push({ uid: 1_359_808_379, sender: 'brief@example.com', subject: '新闻', received: f.now(), published: null });
+  await f.scan();
+  assert.deepEqual(f.bodies, [1_359_808_379]);
+  assert.equal(f.store.get('SELECT uid FROM mailbox_cursors')!.uid, 1_359_808_379);
+  await f.scan();
+  assert.equal(f.bodies.length, 1);
+});
 test('body failure becomes durable task before cursor advances', async (t) => {
   const f = mailboxFixture(t);
   f.source('email');

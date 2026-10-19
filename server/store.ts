@@ -204,7 +204,7 @@ export class Store {
   }
   sources() {
     return this.all<Source>(
-      `SELECT s.*, (SELECT count(*) FROM source_items si JOIN deliveries d ON d.item_id=si.item_id WHERE si.source_id=s.id AND d.status IN ('pending','retry_wait','unknown','digest_wait')) AS backlog FROM sources s WHERE deleted=0 ORDER BY created DESC`,
+      `SELECT s.*, (SELECT count(*) FROM source_items si JOIN deliveries d ON d.item_id=si.item_id JOIN items i ON i.id=d.item_id WHERE si.source_id=s.id AND i.expired=0 AND d.status IN ('pending','retry_wait','unknown','digest_wait')) AS backlog FROM sources s WHERE deleted=0 ORDER BY created DESC`,
     );
   }
   createSource(input: {
@@ -240,6 +240,12 @@ export class Store {
   toggle(id: string, enabled: boolean, notify: boolean, mode = 'new_only') {
     return this.tx(() => {
       const s = this.source(id);
+      if (enabled && s.enabled && !!s.notify !== notify) {
+        this.run('UPDATE sources SET notify=? WHERE id=?', +notify, id);
+        this.cancelOrphans();
+        this.event('source_notification_changed', id, notify ? 'enabled' : 'disabled');
+        return this.source(id);
+      }
       if (!enabled && s.type === 'email')
         this.run(
           'UPDATE sources SET boundary=COALESCE((SELECT uid FROM mailbox_cursors WHERE id=1),boundary) WHERE id=?',
@@ -630,6 +636,7 @@ export class Store {
             d.item_id,
           ) &&
           !this.get("SELECT 1 FROM items WHERE id=? AND key LIKE 'test:%'", d.item_id) &&
+          !(d.mode === 'digest_part' && this.get("SELECT 1 FROM digest_batches b JOIN meta m ON m.key='aihot' WHERE b.id=? AND b.slot LIKE 'aihot:%' AND json_extract(m.value,'$.enabled')=1", d.batch_id)) &&
           !this.get(
             "SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=? AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off'",
             d.item_id,
@@ -778,9 +785,11 @@ export class Store {
         "SELECT count(*) n FROM items WHERE expired=0 AND kind NOT IN ('digest','summary')",
       )!.n,
       pending: this.get<Row>(
-        `SELECT count(*) n FROM deliveries WHERE status IN ('pending','retry_wait','digest_wait')`,
+        `SELECT count(*) n FROM deliveries d JOIN items i ON i.id=d.item_id WHERE i.expired=0 AND d.status IN ('pending','retry_wait','digest_wait')`,
       )!.n,
-      unknown: this.get<Row>(`SELECT count(*) n FROM deliveries WHERE status='unknown'`)!.n,
+      unknown: this.get<Row>(
+        `SELECT count(*) n FROM deliveries d JOIN items i ON i.id=d.item_id WHERE i.expired=0 AND d.status='unknown'`,
+      )!.n,
       sent: this.get<Row>(`SELECT count(*) n FROM deliveries WHERE status='sent'`)!.n,
       today: this.get<Row>('SELECT count(*) n FROM attempts WHERE day=?', day)!.n,
       heartbeat: this.get<Row>('SELECT value FROM meta WHERE key=?', 'heartbeat')?.value || null,
