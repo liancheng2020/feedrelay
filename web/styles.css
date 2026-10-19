@@ -711,6 +711,19 @@ label select {
   width: min(400px, calc(100% - 40px));
   margin: 14vh auto;
 }
+.password-input {
+  position: relative;
+  width: 100%;
+}
+.password-input input { width: 100%; padding-right: 44px; margin: 0; }
+.password-input button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; padding: 0; }
+.password-form { display: grid; gap: 16px; width: 100%; max-width: 400px; }
+.password-form label { display: block; margin-bottom: 8px; }
+.password-form p { margin: 0; }
+.password-recovery { margin-top: 20px; color: var(--muted); font-size: 13px; }
+.password-recovery summary { cursor: pointer; }
+.password-recovery code { overflow-wrap: anywhere; }
+.mobile-logout { display: none; }
 .login h1 {
   margin: 35px 0 12px;
 }
@@ -1385,12 +1398,13 @@ label select {
   }
 }
 @media (max-width: 700px) {
+  .sidebar .mobile-logout { display: inline-flex; position: absolute; top: 10px; right: 17px; }
   .workspace {
     display: block;
   }
   .sidebar {
     height: auto;
-    position: static;
+    position: relative;
     border-right: 0;
     border-bottom: 1px solid #dce4de;
     padding: 15px 17px;
@@ -1548,33 +1562,43 @@ label select {
   font-size: 12px;
   padding: 4px 8px;
 }
-.digest-schedule {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border-top: 1px solid #dfe6e1;
+.digest-settings {
   border-bottom: 1px solid #dfe6e1;
-  padding: 18px 0;
-  margin-bottom: 25px;
-  flex-wrap: wrap;
+  margin-bottom: 20px;
 }
-.digest-schedule button {
-  margin-left: auto;
-}
-.digest-list article {
-  border-top: 1px solid #dfe6e1;
-  padding: 22px 0;
-}
-.digest-list header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
+.digest-schedule {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
+  gap: 14px;
+  padding: 18px 0;
 }
-.digest-list h2 {
-  font-size: 16px;
-  margin-bottom: 5px;
+.digest-schedule + .digest-schedule { border-top: 1px solid #e6ece8; }
+.digest-schedule-icon { color: #71877c; }
+.digest-schedule-main h2 { margin: 0; font-size: 14px; line-height: 22px; }
+.digest-schedule-main p { margin: 3px 0 0; color: #718177; font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
+.digest-schedule-main .digest-schedule-note { color: #9a7028; }
+.digest-schedule-actions { display: flex; align-items: center; gap: 20px; }
+.digest-schedule-actions .check { margin: 0; font-size: 13px; white-space: nowrap; }
+.digest-schedule-actions .icon { display: inline-flex; align-items: center; justify-content: center; color: #60786c; }
+.digest-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 18px 12px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 4px;
 }
+.digest-list article + article { border-top: 1px solid #e6ece8; }
+a.digest-entry:hover { background: #edf3ef; }
+a.digest-entry:focus-visible { outline: 2px solid #176d5b; outline-offset: -2px; }
+.digest-entry > div:first-child { min-width: 0; }
+.digest-list h2 { font-size: 16px; line-height: 24px; margin: 0; }
+.digest-entry-status { display: flex; align-items: center; gap: 16px; flex-shrink: 0; color: #72877c; }
+.digest-meta { margin: 4px 0 0; color: #718177; font-size: 13px; line-height: 20px; }
 .digest-part {
   display: flex;
   align-items: center;
@@ -1583,9 +1607,12 @@ label select {
   border-top: 1px solid #e6ece8;
   flex-wrap: wrap;
 }
-.digest-part button {
+.digest-part a {
   margin-left: auto;
   font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .import-preview {
   margin-top: 20px;
@@ -1620,8 +1647,13 @@ label select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .digest-schedule {
-    font-size: 12px;
+    gap: 10px 12px;
+    grid-template-columns: 20px minmax(0, 1fr);
   }
+  .digest-schedule-actions, .digest-schedule > button { grid-column: 2; justify-self: start; }
+  .digest-schedule-actions { gap: 18px; }
+  .digest-entry { padding: 16px 4px; gap: 10px; }
+  .digest-entry-status { gap: 8px; }
   .digest-part {
     gap: 8px;
   }

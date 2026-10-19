@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { randomBytes, scryptSync } from 'node:crypto';
 
-const password = randomBytes(15).toString('base64url');
+const password = randomBytes(12).toString('base64url');
 const salt = randomBytes(16).toString('hex');
 const hash = `scrypt:${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
 const template = await readFile('.env.example', 'utf8');

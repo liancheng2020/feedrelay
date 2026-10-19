@@ -15,11 +15,12 @@ test('v0.2 desktop: digest parts, confirmed mode change and portable config', as
   await page.getByRole('navigation').getByRole('button', { name: '每日日报' }).click();
   await expect(page.locator('.digest-list article').first()).toBeVisible();
   await page.screenshot({ path: info.outputPath('desktop-digests.png'), fullPage: true });
-  await page.getByRole('button', { name: '查看分片' }).first().click();
+  await page.locator('a.digest-entry').first().click();
   await expect(page.getByRole('region', { name: '内容详情' })).toContainText(
     'FeedRelay 日报',
   );
   await page.getByRole('button', { name: '返回列表' }).click();
+  await expect(page.getByRole('heading', { name: '每日日报', exact: true })).toBeVisible();
   await page
     .getByRole('navigation')
     .getByRole('button', { name: /订阅源/ })

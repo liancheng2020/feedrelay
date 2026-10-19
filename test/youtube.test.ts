@@ -206,7 +206,7 @@ test('YT-H04: authenticated add awaits resolution, stores only canonical ID paus
     name: 'Handle channel',
     channel: 'https://www.youtube.com/@fixture',
   };
-  assert.equal((await call('/sources', source)).status, 403);
+  assert.equal((await call('/sources', source)).status, 401);
   assert.equal(calls, 0);
   csrf = (await (await call('/login', { password: 'demo' })).json()).csrf;
   const response = await call('/sources', source);

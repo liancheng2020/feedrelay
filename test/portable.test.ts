@@ -119,7 +119,7 @@ test('v1 schema migrates without losing sources, delivery or settings', (t) => {
   assert.equal(restored.status, 0, restored.stderr);
   const fromBackup = new Store(destination, 'demo', f.now);
   t.after(() => fromBackup.close());
-  assert.equal(fromBackup.get('PRAGMA user_version')!.user_version, 4);
+  assert.equal(fromBackup.get('PRAGMA user_version')!.user_version, 5);
   assert.equal(
     fromBackup.get("SELECT count(*) n FROM meta WHERE key IN ('weixin_account','weixin_pair')")!.n,
     0,
@@ -127,7 +127,7 @@ test('v1 schema migrates without losing sources, delivery or settings', (t) => {
   assert.equal(fromBackup.get('SELECT status FROM deliveries')!.status, 'unknown');
   const upgraded = new Store(f.dir, 'demo', f.now);
   t.after(() => upgraded.close());
-  assert.equal(upgraded.get('PRAGMA user_version')!.user_version, 4);
+  assert.equal(upgraded.get('PRAGMA user_version')!.user_version, 5);
   assert.equal(upgraded.source(s.id).channel, channel);
   assert.equal(upgraded.source(s.id).delivery_mode, 'immediate');
   assert.equal(

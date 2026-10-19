@@ -353,11 +353,12 @@ test('YT-I06: baseline/history are not automatically extracted and scope switch 
   assert.equal(f.service.list(item.id)[0].status, 'cancelled');
 });
 
-test('YT-I07: v3 migration defaults to feed; v4 restore erases cached captions and disables authorization', async (t) => {
+test('YT-I07: v3 migration defaults to feed; restore erases cached captions, sessions and authorization', async (t) => {
   const f = setup(t);
   f.service.enqueue(f.item.id);
   await f.service.cycle('demo');
   const path = join(f.dir, 'v4.sqlite');
+  f.store.run('INSERT INTO admin_sessions VALUES (?,?,0)', 'synthetic-session', Date.now() + 86400000);
   await backup(f.store.db, path);
   const target = join(f.dir, 'restored');
   const restored = spawnSync(
@@ -369,6 +370,7 @@ test('YT-I07: v3 migration defaults to feed; v4 restore erases cached captions a
   const db = new Store(target, 'demo');
   assert.equal(db.get('SELECT material FROM summaries')!.material, '');
   assert.equal(db.source(f.source.id).summary_mode, 'off');
+  assert.equal(db.all('SELECT * FROM admin_sessions').length, 0);
   db.close();
   const v3Path = join(f.dir, 'v3');
   const old = new Store(v3Path, 'demo');
@@ -383,7 +385,7 @@ test('YT-I07: v3 migration defaults to feed; v4 restore erases cached captions a
   old.close();
   const upgraded = new Store(v3Path, 'demo');
   assert.equal(upgraded.source(source.id).summary_content, 'feed');
-  assert.equal(upgraded.get('PRAGMA user_version')!.user_version, 4);
+  assert.equal(upgraded.get('PRAGMA user_version')!.user_version, 5);
   upgraded.close();
 });
 

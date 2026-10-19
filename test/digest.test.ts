@@ -235,7 +235,7 @@ test('v2 backup restore keeps membership and quarantines pending parts', (t) => 
   const restored = new Store(restoredDir, 'demo', f.now);
   t.after(() => restored.close());
   const batch = listDigests(restored)[0];
-  assert.equal(restored.get('PRAGMA user_version')!.user_version, 4);
+  assert.equal(restored.get('PRAGMA user_version')!.user_version, 5);
   assert.equal(restored.sources()[0].summary_mode, 'off');
   assert.equal(batch.members, 1);
   assert.equal(batch.parts[0].status, 'unknown');

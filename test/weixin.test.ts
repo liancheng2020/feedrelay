@@ -320,7 +320,7 @@ test('WX-07: API binding and test sends require auth, Origin, CSRF and explicit 
     if (cookies.length) cookie = cookies.map((c) => c.split(';')[0]).join('; ');
     return response;
   }
-  assert.equal((await api('/weixin/pair', { confirmed: true })).status, 403);
+  assert.equal((await api('/weixin/pair', { confirmed: true })).status, 401);
   const login = await api('/login', { password: 'demo' });
   csrf = (await login.json()).csrf;
   assert.equal((await api('/weixin/pair', {})).status, 400);

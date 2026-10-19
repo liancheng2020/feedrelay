@@ -9,7 +9,6 @@ import { resolve } from 'node:path';
 import {
   AppError,
   preview,
-  verifyPassword,
   validateSettings,
   type Config,
   type Settings,
@@ -21,6 +20,7 @@ import { advanceDemo } from './demo.js';
 import { listDigests } from './digest.js';
 import { latestDelivery, pushStateSql } from './push-state.js';
 import { exportSources, previewImport, applyImport } from './portable.js';
+import { AdminAuth } from './auth.js';
 
 const bool = (v: unknown) => {
   if (typeof v !== 'boolean') throw new AppError('INVALID_BOOLEAN');
@@ -28,6 +28,7 @@ const bool = (v: unknown) => {
 };
 export function createApp(store: Store, config: Config, engine: Engine) {
   const app = new Koa();
+  const auth = new AdminAuth(store, config);
   app.keys = [config.sessionSecret];
   app.proxy = false;
   app.use(async (ctx, next) => {
@@ -65,16 +66,20 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   );
   app.use(async (ctx, next) => {
     if (!ctx.path.startsWith('/api/')) return next();
+    if (ctx.session?.authenticated) {
+      const active = auth.valid(ctx.session.sid);
+      if (!active) ctx.session = null;
+      else ctx.session.mustChangePassword = !!active.must_change;
+    }
+    const publicPath = ['/api/health', '/api/session', '/api/login'].includes(ctx.path);
+    if (!publicPath && !ctx.session?.authenticated) throw new AppError('UNAUTHORIZED', 401);
+    if (ctx.session?.mustChangePassword && !['/api/session', '/api/password', '/api/logout', '/api/health'].includes(ctx.path))
+      throw new AppError('PASSWORD_CHANGE_REQUIRED', 403);
     if (!['GET', 'HEAD'].includes(ctx.method)) {
       if (ctx.get('origin') !== config.origin) throw new AppError('INVALID_ORIGIN', 403);
       if (ctx.path !== '/api/login' && ctx.get('x-csrf-token') !== ctx.session?.csrf)
         throw new AppError('INVALID_CSRF', 403);
     }
-    if (
-      !['/api/health', '/api/session', '/api/login'].includes(ctx.path) &&
-      !ctx.session?.authenticated
-    )
-      throw new AppError('UNAUTHORIZED', 401);
     engine.syncDestination();
     await next();
   });
@@ -110,29 +115,26 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       authenticated: !!ctx.session.authenticated,
       csrf: ctx.session.csrf,
       demo: config.demo,
+      mustChangePassword: !!ctx.session.mustChangePassword,
     };
   });
   router.post('/api/login', (ctx) => {
-    const failures = Number(
-      store.get<{ n: number }>(
-        `SELECT count(*) n FROM events WHERE action='login_failed' AND at>?`,
-        store.now() - 900_000,
-      )!.n,
-    );
-    if (failures >= 10) throw new AppError('LOGIN_RATE_LIMITED', 429);
-    const password = (ctx.request.body as { password?: unknown })?.password;
-    if (
-      typeof password !== 'string' ||
-      password.length > 256 ||
-      !verifyPassword(password, config.passwordHash)
-    ) {
-      store.event('login_failed', 'admin');
-      throw new AppError('INVALID_PASSWORD', 401);
-    }
-    ctx.session = { authenticated: true, csrf: randomBytes(24).toString('hex') };
-    ctx.body = { csrf: ctx.session.csrf, demo: config.demo };
+    const { password, remember = false } = ctx.request.body as { password?: unknown; remember?: unknown };
+    bool(remember);
+    auth.verify(password);
+    auth.revoke(ctx.session?.sid);
+    ctx.session = auth.issue(remember as boolean);
+    ctx.body = { csrf: ctx.session.csrf, demo: config.demo, mustChangePassword: ctx.session.mustChangePassword };
+  });
+  router.post('/api/password', (ctx) => {
+    const { currentPassword, newPassword } = ctx.request.body as { currentPassword?: unknown; newPassword?: unknown };
+    auth.verify(currentPassword);
+    auth.setPassword(newPassword);
+    ctx.session = null;
+    ctx.body = { ok: true };
   });
   router.post('/api/logout', (ctx) => {
+    auth.revoke(ctx.session?.sid);
     ctx.session = null;
     ctx.body = { ok: true };
   });

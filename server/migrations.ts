@@ -1,5 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+export function migrateV5(db: DatabaseSync) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (Number(db.prepare('PRAGMA user_version').get()!.user_version) < 5)
+      db.exec(`CREATE TABLE IF NOT EXISTS admin_sessions (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, must_change INTEGER NOT NULL DEFAULT 0);
+        PRAGMA user_version=5;`);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 export function migrateV2(db: DatabaseSync) {
   db.exec('BEGIN IMMEDIATE');
   try {

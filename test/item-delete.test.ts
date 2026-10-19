@@ -47,7 +47,7 @@ test('RD-13: item delete API requires session, CSRF and confirmation, updates li
     if(r.headers.getSetCookie().length) cookie = r.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
     return r;
   };
-  assert.equal((await api(`/items/${item.id}`,'DELETE',{confirmed:true})).status,403);
+  assert.equal((await api(`/items/${item.id}`,'DELETE',{confirmed:true})).status,401);
   csrf = (await (await api('/login','POST',{password:'demo'})).json()).csrf;
   assert.equal((await api(`/items/${item.id}`,'DELETE',{},'bad-token')).status,403);
   assert.equal((await api(`/items/${item.id}`,'DELETE',{})).status,400);

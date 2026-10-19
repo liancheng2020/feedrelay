@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { copyFile, readFile, mkdir, rename, unlink, open, chmod, access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { migrateV2, migrateV3, migrateV4 } from '../server/migrations.js';
+import { migrateV2, migrateV3, migrateV4, migrateV5 } from '../server/migrations.js';
 
 const source = process.argv[2];
 if (!source || !process.argv.includes('--confirm-stopped'))
@@ -32,12 +32,14 @@ try {
   try {
     if (
       db.prepare('PRAGMA integrity_check').get()?.integrity_check !== 'ok' ||
-      ![1, 2, 3, 4].includes(Number(db.prepare('PRAGMA user_version').get()?.user_version))
+      ![1, 2, 3, 4, 5].includes(Number(db.prepare('PRAGMA user_version').get()?.user_version))
     )
       throw new Error('INVALID_BACKUP');
     migrateV2(db);
     migrateV3(db);
     migrateV4(db);
+    migrateV5(db);
+    db.exec('DELETE FROM admin_sessions');
     db.exec("DELETE FROM meta WHERE key IN ('weixin_account','weixin_pair')");
     db.exec("UPDATE meta SET value=json_set(value,'$.enabled',json('false')) WHERE key='aihot'");
     db.exec(

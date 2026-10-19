@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppError, defaults, dayKey, preview, type Settings } from './config.js';
-import { migrateV2, migrateV3, migrateV4 } from './migrations.js';
+import { migrateV2, migrateV3, migrateV4, migrateV5 } from './migrations.js';
 
 export interface Source {
   id: string;
@@ -110,7 +110,7 @@ export class Store {
     this.db = new DatabaseSync(join(dir, 'feedrelay.sqlite'));
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = this.get<{ user_version: number }>('PRAGMA user_version')!.user_version;
-    if (version > 4) {
+    if (version > 5) {
       this.db.close();
       throw new AppError('DATABASE_NEWER_THAN_APP');
     }
@@ -149,6 +149,7 @@ export class Store {
       migrateV2(this.db);
       migrateV3(this.db);
       migrateV4(this.db);
+      migrateV5(this.db);
     } catch (error) {
       this.db.close();
       throw error;

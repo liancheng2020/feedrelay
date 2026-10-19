@@ -4,6 +4,8 @@ import WeixinConnection, { type WeixinStatus } from './WeixinConnection.vue';
 import TransferDialog from './TransferDialog.vue';
 import SummarySettings, { type SummaryConfig } from './SummarySettings.vue';
 import ItemDetail from './ItemDetail.vue';
+import PasswordInput from './PasswordInput.vue';
+import PasswordSettings from './PasswordSettings.vue';
 import { type SummaryView } from './SummaryReading.vue';
 import { summaryState } from './summary-state';
 import {
@@ -29,6 +31,7 @@ import {
   CalendarDays,
   Upload,
   Download,
+  ExternalLink,
 } from '@lucide/vue';
 
 interface Source {
@@ -123,6 +126,7 @@ const authenticated = ref(false),
   demo = ref(false),
   csrf = ref(''),
   password = ref('');
+const remember = ref(false), mustChangePassword = ref(false);
 const aihot = ref({ enabled: false, startDate: '', nextCheck: 0, lastDate: '', error: '' });
 const routeItem = () => location.hash.match(/^#items\/([a-f0-9-]{36})$/i)?.[1] || '';
 const detailId = ref(routeItem());
@@ -257,6 +261,9 @@ const errors: Record<string, string> = {
   DIGEST_ENTRY_TOO_LONG: '条目过长，无法安全纳入日报。',
   INVALID_PASSWORD: '密码不正确。',
   LOGIN_RATE_LIMITED: '登录尝试过多，请15分钟后重试。',
+  INVALID_NEW_PASSWORD: '新密码须为8–16个字符，不能全为空格。',
+  PASSWORD_UNCHANGED: '新密码不能与当前密码相同。',
+  PASSWORD_CHANGE_REQUIRED: '请先修改默认管理密码。',
   UNAUTHORIZED: '会话已过期，请重新登录。',
   INVALID_ORIGIN: '访问地址与 APP_ORIGIN 不一致，请检查本地配置。',
   INVALID_CSRF: '会话已更新，请刷新页面。',
@@ -299,8 +306,9 @@ const explain = (code: string) => errors[code] || code;
 const deliveryLabels: Record<string, string> = {
   unpublished: '未推送', waiting: '待推送', sending: '推送中', sent: '已推送', attention: '需处理',
 };
-const zonedTime = (value: number, zone: string) =>
-  new Date(value).toLocaleString('zh-CN', { timeZone: zone, hour12: false });
+const digestDate = (batch: Digest) => new Date(batch.cutoff).toLocaleDateString('zh-CN', {
+  timeZone: batch.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+});
 const time = (value: number | string | null | undefined) =>
   value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '尚无记录';
 const heading = computed(
@@ -379,7 +387,8 @@ async function api<T = unknown>(path: string, method = 'GET', body?: unknown): P
   });
   const result = await response.json();
   if (!response.ok) {
-    if (response.status === 401) authenticated.value = false;
+    if (response.status === 401) clearSession();
+    if (result.error === 'PASSWORD_CHANGE_REQUIRED') mustChangePassword.value = true;
     throw new Error(explain(result.error || '请求失败'));
   }
   return result as T;
@@ -411,7 +420,7 @@ async function act(fn: () => Promise<void>, message = '') {
   notice.value = '';
   try {
     await fn();
-    if (authenticated.value && fn !== load) await load();
+    if (authenticated.value && !mustChangePassword.value && fn !== load) await load();
     notice.value = message;
   } catch (e) {
     error.value = e instanceof Error ? e.message : '操作失败';
@@ -421,20 +430,42 @@ async function act(fn: () => Promise<void>, message = '') {
 }
 async function login() {
   await act(async () => {
-    const session = await api<{ csrf: string }>('/login', 'POST', { password: password.value });
+    const session = await api<{ csrf: string; mustChangePassword: boolean }>('/login', 'POST', { password: password.value, remember: remember.value });
     csrf.value = session.csrf;
+    mustChangePassword.value = session.mustChangePassword;
     authenticated.value = true;
     password.value = '';
   });
 }
+async function changePassword(value: { currentPassword: string; newPassword: string }) {
+  await act(async () => {
+    await api('/password', 'POST', value);
+    clearSession();
+    const session = await api<{ csrf: string }>('/session');
+    csrf.value = session.csrf;
+  }, '密码已更新，请使用新密码登录。');
+}
+function clearSession() {
+  authenticated.value = false;
+  mustChangePassword.value = false;
+  password.value = '';
+  editor.value = false;
+  activation.value = null;
+  deletion.value = null;
+  confirmation.value = null;
+  transfer.value = '';
+  items.value = [];
+  sources.value = [];
+  jobs.value = [];
+  digests.value = [];
+  detail.value = null;
+  overview.value = null;
+  summaryConfig.value = null;
+}
 async function logout() {
   await act(async () => {
     await api('/logout', 'POST');
-    authenticated.value = false;
-    items.value = [];
-    sources.value = [];
-    detail.value = null;
-    overview.value = null;
+    clearSession();
   });
 }
 function add(s?: Source) {
@@ -511,9 +542,6 @@ function changeMode(s: Source, event: Event) {
       await api(`/sources/${s.id}/delivery-mode`, 'POST', { mode, confirmed: true });
     },
   };
-}
-async function inspectPart(id: string) {
-  openItem(id);
 }
 function changeSummary(s: Source, event: Event, field: 'mode' | 'notify' | 'content' = 'mode') {
   const target = event.target as HTMLSelectElement | HTMLInputElement;
@@ -706,18 +734,19 @@ onMounted(async () => {
   document.addEventListener('keydown', keyboard);
   window.addEventListener('hashchange', routeChanged);
   try {
-    const session = await api<{ authenticated: boolean; demo: boolean; csrf: string }>('/session');
+    const session = await api<{ authenticated: boolean; demo: boolean; csrf: string; mustChangePassword: boolean }>('/session');
     csrf.value = session.csrf;
     demo.value = session.demo;
     authenticated.value = session.authenticated;
-    if (authenticated.value) await load();
+    mustChangePassword.value = session.mustChangePassword;
+    if (authenticated.value && !mustChangePassword.value) await load();
   } catch (e) {
     error.value = String(e);
   } finally {
     ready.value = true;
   }
   timer = setInterval(() => {
-    if (!document.hidden && authenticated.value && !busy.value) act(load);
+    if (!document.hidden && authenticated.value && !mustChangePassword.value && !busy.value) act(load);
   }, 5000);
 });
 onUnmounted(() => {
@@ -736,22 +765,27 @@ onUnmounted(() => {
     <p>频道更新与邮件资讯，集中送达。</p>
     <p v-if="demo" class="demo-note">本地演示 · 模拟数据 · 密码 demo</p>
     <form @submit.prevent="login">
-      <label for="password">管理密码</label
-      ><input
-        id="password"
-        v-model="password"
-        type="password"
-        autocomplete="current-password"
-        required
-        maxlength="256"
-      /><button class="primary" :disabled="busy">
+      <label for="password">管理密码</label>
+      <PasswordInput id="password" v-model="password" autocomplete="current-password" />
+      <label class="check"><input v-model="remember" type="checkbox" />在此设备保持登录 30 天</label>
+      <button class="primary" :disabled="busy">
         <span>登录</span><ChevronRight :size="18" />
       </button>
     </form>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
+    <p v-if="notice" role="status">{{ notice }}</p>
+    <details class="password-recovery"><summary>忘记密码？</summary><p>在服务器项目目录运行 <code>npm run reset-password</code> 重置。</p></details>
+  </main>
+  <main v-else-if="mustChangePassword" class="login">
+    <h1>设置管理密码</h1>
+    <p>请替换默认密码。修改后需重新登录。</p>
+    <PasswordSettings :busy="busy" @save="changePassword" />
+    <p v-if="error" role="alert" class="error">{{ error }}</p>
+    <button class="quiet" :disabled="busy" @click="logout">退出登录</button>
   </main>
   <div v-else class="workspace">
     <aside class="sidebar">
+      <button class="quiet mobile-logout" aria-label="退出登录" title="退出登录" :disabled="busy" @click="logout"><LogOut :size="18" /></button>
       <a class="brand" href="#" @click.prevent="switchView('updates')"
         ><Rss :size="26" /><strong>FeedRelay</strong></a
       >
@@ -799,7 +833,7 @@ onUnmounted(() => {
       <header v-if="view !== 'detail'" class="page-head">
         <div>
           <p class="eyebrow">
-            {{ view === 'updates' ? 'INBOX' : view === 'sources' ? 'SUBSCRIPTIONS' : 'DELIVERY' }}
+            {{ view === 'updates' ? 'INBOX' : view === 'sources' ? 'SUBSCRIPTIONS' : view === 'digests' ? 'DAILY' : 'DELIVERY' }}
           </p>
           <h1>{{ heading }}</h1>
         </div>
@@ -965,20 +999,30 @@ onUnmounted(() => {
         </footer>
       </template>
       <template v-if="view === 'digests'">
-        <div class="digest-schedule">
-          <CalendarDays :size="20" />
-          <span>AIHOT AI 日报 · 每天 10:00 · 北京时间</span>
-          <label class="check"><input type="checkbox" :checked="aihot.enabled" :disabled="busy"
-            @change="act(async () => { await api('/aihot', 'PUT', { enabled: !aihot.enabled }); })" />自动推送</label>
-          <a href="https://aihot.news/daily" target="_blank" rel="noreferrer">查看日报</a>
-        </div>
-        <p v-if="aihot.error" class="muted">{{ aihot.error === 'AIHOT_NOT_PUBLISHED' ? '今日日报尚未发布，稍后重试。' : '日报获取失败，稍后重试。' }}</p>
-        <p v-else-if="aihot.enabled && !aihot.lastDate" class="muted">首次推送：{{ aihot.startDate }} 10:00</p>
-        <div class="digest-schedule">
-          <CalendarDays :size="20" /><span
-            >订阅汇总 · 每天 {{ overview?.settings.digestTime }} · {{ overview?.settings.timezone }}</span
-          ><button @click="switchView('settings')">调整时间</button>
-        </div>
+        <section class="digest-settings" aria-label="日报设置">
+          <div class="digest-schedule">
+            <CalendarDays :size="20" class="digest-schedule-icon" />
+            <div class="digest-schedule-main">
+              <h2>AIHOT AI 日报</h2>
+              <p>每天 10:00 · 北京时间</p>
+              <p v-if="aihot.error" class="digest-schedule-note">{{ aihot.error === 'AIHOT_NOT_PUBLISHED' ? '今日日报尚未发布' : '获取失败，稍后重试' }}</p>
+              <p v-else-if="aihot.enabled && !aihot.lastDate">首次推送：{{ aihot.startDate }} 10:00</p>
+            </div>
+            <div class="digest-schedule-actions">
+              <label class="check"><input type="checkbox" :checked="aihot.enabled" :disabled="busy"
+                @change="act(async () => { await api('/aihot', 'PUT', { enabled: !aihot.enabled }); })" />自动推送</label>
+              <a class="icon" href="https://aihot.news/daily" target="_blank" rel="noreferrer" aria-label="查看 AIHOT 原站" title="查看 AIHOT 原站"><ExternalLink :size="16" /></a>
+            </div>
+          </div>
+          <div class="digest-schedule">
+            <Inbox :size="20" class="digest-schedule-icon" />
+            <div class="digest-schedule-main">
+              <h2>订阅汇总</h2>
+              <p>每天 {{ overview?.settings.digestTime }} · {{ overview?.settings.timezone === 'Asia/Shanghai' ? '北京时间' : overview?.settings.timezone }}</p>
+            </div>
+            <button class="quiet" @click="switchView('settings')"><Settings :size="16" />调整时间</button>
+          </div>
+        </section>
         <div v-if="!digests.length" class="empty">
           <CalendarDays :size="34" />
           <h2>暂无日报批次</h2>
@@ -986,25 +1030,30 @@ onUnmounted(() => {
         </div>
         <section class="digest-list">
           <article v-for="batch in digests" :key="batch.id">
-            <header>
+            <component :is="batch.parts.length ? 'a' : 'div'" class="digest-entry"
+              :href="batch.parts.length ? `#items/${batch.parts[0].item_id}` : undefined"
+              :aria-label="batch.parts.length ? `查看 ${digestDate(batch)} ${batch.slot.startsWith('aihot:') ? 'AIHOT AI 日报' : '订阅汇总'}` : undefined">
               <div>
-                <h2>{{ batch.slot.startsWith('aihot:') ? 'AIHOT · ' : '' }}{{ zonedTime(batch.cutoff, batch.timezone) }}</h2>
-                <p class="muted">
-                  {{ batch.timezone }} · {{ batch.slot.startsWith('aihot:') ? 'AI 日报' : `${batch.members} 条内容` }} · {{ batch.total_parts }} 个分片
-                </p>
+                <h2>{{ digestDate(batch) }}</h2>
+                <p class="digest-meta">{{ batch.slot.startsWith('aihot:') ? 'AIHOT AI 日报' : `订阅汇总 · ${batch.members} 条内容` }}<span v-if="batch.total_parts > 1"> · 共 {{ batch.total_parts }} 部分</span></p>
               </div>
+              <div class="digest-entry-status">
               <span v-if="!batch.total_parts" class="badge">无更新，不发送</span>
-            </header>
+              <span v-else-if="batch.parts.length === 1" class="badge" :class="batch.parts[0].status"
+                :title="batch.parts[0].error ? explain(batch.parts[0].error) : ''">{{ batch.parts[0].resolution === 'user_acknowledged' ? '已人工核查' : labels[batch.parts[0].status] }}</span>
+                <ChevronRight v-if="batch.parts.length" :size="18" />
+              </div>
+            </component>
+            <template v-if="batch.parts.length > 1">
             <div v-for="(part, index) in batch.parts" :key="part.id" class="digest-part">
-              <span>分片 {{ index + 1 }}/{{ batch.total_parts }}</span
+              <span>第 {{ index + 1 }} 部分</span
               ><span class="badge" :class="part.status">{{
                 part.resolution === 'user_acknowledged' ? '已人工核查' : labels[part.status]
               }}</span
               ><span class="muted">{{ part.error ? explain(part.error) : '' }}</span
-              ><button @click="inspectPart(part.item_id)">
-                查看分片<ChevronRight :size="16" />
-              </button>
+              ><a :href="`#items/${part.item_id}`" :aria-label="`查看第 ${index + 1} 部分`">查看内容<ChevronRight :size="16" /></a>
             </div>
+            </template>
           </article>
         </section>
       </template>
@@ -1140,6 +1189,10 @@ onUnmounted(() => {
       </template>
       <template v-if="view === 'settings'">
         <section class="settings-band">
+          <h2>管理密码</h2>
+          <PasswordSettings :busy="busy" @save="changePassword" />
+        </section>
+        <section class="settings-band">
           <h2>邮箱接入</h2>
           <div class="connection-row">
             <Mail :size="21" />
@@ -1258,7 +1311,7 @@ onUnmounted(() => {
         :time="time"
         :explain="explain"
         :labels="labels"
-        @back="switchView('updates')"
+        @back="switchView(detail?.kind === 'digest' ? 'digests' : 'updates')"
         @generate="generateSummary"
         @push="pushSummary"
         @resolve="resolve"
