@@ -8,6 +8,7 @@ for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [1280, 720],
     await page.setViewportSize({ width, height });
     await page.goto('./');
     await expect(page.getByRole('heading', { name: 'FeedRelay.', exact: true })).toBeVisible();
+    await expect(page.getByText('FEED IN. INSIGHT OUT.', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('link', { name: '开始部署', exact: true }).last()).toBeVisible();
     expect(await page.locator('.hero-product img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     await page.screenshot({ path: `/tmp/feedrelay-site-${width}-hero.png` });
@@ -41,7 +42,9 @@ for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [1280, 720],
 }
 
 test('PAGE-02: previews, keyboard selection and accessible zoom work', async ({ page }) => {
-  await page.goto('./#preview');
+  await page.goto('./');
+  await page.getByRole('navigation', { name: '官网导航' }).getByRole('link', { name: '界面预览', exact: true }).click();
+  await expect(page).toHaveURL(/#preview$/);
   await expect(page.getByRole('link', { name: '功能说明', exact: true })).toHaveAttribute('href', 'https://github.com/liancheng2020/feedrelay#功能');
   const tabs = page.getByRole('tablist', { name: '产品界面' });
   await tabs.getByRole('tab', { name: '最新更新' }).click();

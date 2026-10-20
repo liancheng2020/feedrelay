@@ -110,7 +110,6 @@ onUnmounted(() => {
         <p class="platform-note">macOS / Windows / Linux<span>本机打开即用</span></p>
       </div>
       <div class="hero-product" aria-hidden="true"><picture><source media="(max-width: 760px)" :srcset="`${images}hero-mobile.png`" /><img :src="`${images}hero.png`" alt="" width="1131" height="500" fetchpriority="high" /></picture></div>
-      <a class="hero-preview-link" href="#preview" aria-label="查看完整界面预览"><span>FEED IN. INSIGHT OUT.</span><ArrowUpRight :size="16" /></a>
     </section>
 
     <div class="source-strip">

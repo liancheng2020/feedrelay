@@ -61,7 +61,6 @@ h1, h2, h3, p { margin-top: 0; }
 .platform-note span { padding-left: 14px; border-left: 1px solid #cfd7cb; }
 .hero-product { position: absolute; z-index: 1; top: 350px; left: 50%; width: min(1100px, calc(100% - 64px)); transform: translateX(-50%); text-align: left; border: 1px solid #dce4da; box-shadow: 0 12px 55px #2035260c; }
 .hero-product img { display: block; width: 100%; height: auto; }
-.hero-preview-link { position: absolute; z-index: 3; bottom: 18px; right: 28px; display: flex; align-items: center; gap: 20px; padding: 9px 12px; background: #f6f8f5; border: 1px solid #dce4da; color: #69796a; font-family: Consolas, monospace; font-size: 9px; }
 .mobile-break { display: none; }
 .source-strip { background: #fff; border-bottom: 1px solid var(--line); }
 .source-strip-inner { min-height: 88px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
@@ -165,7 +164,7 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
   .mobile-break { display: initial; }.hero-description { font-size: 12px; line-height: 1.9; margin-bottom: 22px; }
   .hero-actions { gap: 8px; }.button { min-width: 133px; gap: 15px; height: 43px; font-size: 12px; padding-inline: 16px; }
   .platform-note { flex-direction: column; gap: 7px; margin-top: 17px; font-size: 9px; }.platform-note span { padding: 0; border: 0; }
-  .hero-product { top: 439px; width: calc(100% - 40px); left: 20px; transform: none; }.hero-preview-link { right: 20px; bottom: 14px; font-size: 8px; padding: 7px 9px; }
+  .hero-product { top: 439px; width: calc(100% - 40px); left: 20px; transform: none; }
   .source-strip-inner { min-height: 82px; justify-content: center; flex-direction: column; gap: 10px; padding-block: 16px; }.strip-label { font-size: 10px; }.source-names { gap: 25px; }.source-names > span { font-size: 12px; gap: 6px; }.source-names svg { width: 17px; height: 17px; }
   .section { padding-block: 64px; }.section-heading { align-items: flex-start; margin-bottom: 34px; gap: 18px; }.section-heading .eyebrow { margin-bottom: 13px; }
   h2 { font-size: 24px; line-height: 1.6; }.section-heading h2 span { display: block; }.heading-note { display: none; }.section-heading > .text-link { font-size: 10px; margin-top: 32px; white-space: nowrap; gap: 4px; }
@@ -191,7 +190,6 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
   .hero-description { font-size: 11px; margin-bottom: 14px; }
   .platform-note { margin-top: 12px; gap: 4px; }
   .hero-product { top: 355px; }
-  .hero-preview-link { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   :root { scroll-behavior: auto; } *, *::before, *::after { transition: none !important; animation: none !important; }
