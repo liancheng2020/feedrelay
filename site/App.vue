@@ -109,7 +109,7 @@ onUnmounted(() => {
         </div>
         <p class="platform-note">macOS / Windows / Linux<span>本机打开即用</span></p>
       </div>
-      <div class="hero-product" aria-hidden="true"><picture><source media="(max-width: 760px)" :srcset="`${images}hero-mobile.png`" /><img :src="`${images}hero.png`" alt="" width="1131" height="590" fetchpriority="high" /></picture></div>
+      <div class="hero-product" aria-hidden="true"><picture><source media="(max-width: 760px)" :srcset="`${images}hero-mobile.png`" /><img :src="`${images}hero.png`" alt="" width="1131" height="500" fetchpriority="high" /></picture></div>
       <a class="hero-preview-link" href="#preview" aria-label="查看完整界面预览"><span>FEED IN. INSIGHT OUT.</span><ArrowUpRight :size="16" /></a>
     </section>
 
@@ -132,7 +132,7 @@ onUnmounted(() => {
 
     <section id="preview" class="preview-band section" aria-labelledby="preview-title">
       <div class="shell">
-        <div class="section-heading"><div><p class="eyebrow">A CLOSER LOOK</p><h2 id="preview-title">看见更新，<span>也看清重点。</span></h2></div><a class="text-link" :href="`${repo}/blob/main/docs/PRODUCT.md`" target="_blank" rel="noreferrer">功能说明<ArrowUpRight :size="15" /></a></div>
+        <div class="section-heading"><div><p class="eyebrow">A CLOSER LOOK</p><h2 id="preview-title">看见更新，<span>也看清重点。</span></h2></div><a class="text-link" :href="`${repo}#功能`" target="_blank" rel="noreferrer">功能说明<ArrowUpRight :size="15" /></a></div>
         <div class="preview-toolbar">
           <div class="tabs preview-tabs" role="tablist" aria-label="产品界面" @keydown="selectTab($event, previews, activePreview, id => activePreview = id)">
             <button v-for="item in previews" :id="`tab-${item.id}`" :key="item.id" role="tab" :aria-selected="activePreview === item.id" :tabindex="activePreview === item.id ? 0 : -1" :aria-controls="`panel-${item.id}`" :disabled="!interactive" @click="activePreview = item.id"><component :is="item.icon" :size="16" />{{ item.name }}</button>

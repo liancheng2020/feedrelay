@@ -1,8 +1,21 @@
 # FeedRelay
 
-自动采集 YouTube、邮件和 RSS，使用 DeepSeek 提取要点，再推送到微信或飞书。每个人都可以在自己的电脑上独立部署。
+自动采集 YouTube、邮件和 RSS，用 DeepSeek 提取要点，再推送到自己的微信或飞书。
 
-本机打开即用，无需登录。每个部署使用自己的数据和凭证，目前不支持多人共用。
+**[官网与界面预览](https://liancheng2020.github.io/feedrelay/)** · [自托管指南](docs/SELF_HOSTING.md) · [技术设计](docs/TECHNICAL_DESIGN.md) · [开发与发布](docs/DEVELOPMENT.md)
+
+支持 macOS、Windows、Linux。每个人独立部署，使用自己的数据和凭证；默认本机打开即用，无需注册登录，不支持多人共用后台。
+
+## 功能
+
+| 功能 | 说明 |
+| --- | --- |
+| 订阅采集 | YouTube 频道、IMAP 邮件规则、RSS / Atom；支持暂停和去重 |
+| AI 摘要 | 关闭、按需、自动三种模式；视频优先字幕，可选本地音频转写 |
+| 消息推送 | 微信 ClawBot 或飞书私聊，二选一；即时推送或日报汇总 |
+| 每日日报 | 每天北京时间 10:00 推送 [AIHOT](https://aihot.news/daily) 日报，不额外调用模型 |
+| 内容管理 | 列表分页、正文与摘要详情、发送记录、删除确认 |
+| 本机托管 | 用户登录后自启、异常重启、运行检查、日志轮转、可选自动备份 |
 
 ## 工作流程
 
@@ -12,74 +25,50 @@
                                     失败则等待处理
 ```
 
-- 自动摘要：新内容采集后自动生成摘要，成功后再推送。
+- 自动摘要：新内容采集后生成摘要，成功后才推送；失败不回退为原文。
 - 按需摘要：等待你在详情页生成摘要，再按订阅设置处理推送。
 - 关闭摘要：按订阅设置发送标题和原文预览，不调用模型。
-- 新来源默认暂停，首次采集只建立基线，不推送历史内容。
+- 新来源默认暂停；首次采集只建立基线，不自动推送历史内容。
 
-## 启动
+## 快速开始
 
-需要 Node.js 24，在项目目录运行：
+先安装 Git 和 Node.js 24，在终端或 PowerShell 运行：
 
 ```bash
+git clone https://github.com/liancheng2020/feedrelay.git
+cd feedrelay
 npm ci
 npm run setup
 npm run build
 npm start
 ```
 
-打开 [localhost:8787](http://localhost:8787)。后台任务随服务运行，浏览器可以关闭；电脑休眠或服务退出会暂停处理。
+打开 [localhost:8787](http://localhost:8787)。`setup` 创建本机 `.env`，不覆盖已有配置。浏览器可以关闭，服务必须保持运行。
 
-`setup` 创建本机 `.env`，不会覆盖已有文件。配置参考 [.env.example](.env.example)，修改后重启服务。已有配置若设置了 `EMBED_WORKER=0`，需要另外运行 `npm run worker`。
+1. 在 `.env` 填写 `DEEPSEEK_API_KEY`，接邮件再填邮箱服务器、账号和授权码，重启服务；其余常用参数已有默认值，见 [.env.example](.env.example)。
+2. 在“投递设置”确认模型预算，绑定微信或配置飞书，测试连接。
+3. 添加来源，启用采集和私聊推送，选择“自动摘要”并确认来源授权。
+4. 首次采集建立基线后，等待新内容，确认接收端实际收到摘要。
 
-macOS、Windows、Linux 的安装、视频组件和长期托管见[自托管指南](docs/SELF_HOSTING.md)。首次配置先确认能收到一条真实消息，再启用长期托管。
+默认微信推送，在页面扫码绑定即可；飞书和网络代理按需配置。只填 Key 不会自动开启来源摘要。邮箱接入、视频组件、高级选项和排查步骤见[自托管指南](docs/SELF_HOSTING.md)。
 
-```text
+## 长期运行
+
+停止手动启动的服务后，安装当前用户托管：
+
+```bash
 npm run doctor
-# 停止手动服务后，安装当前用户托管并立即启动
 npm run service -- install
 npm run service -- status
 ```
 
-托管默认登录系统后启动，异常退出自动重启；休眠和关机仍会暂停。Windows/Linux 已提供托管入口，系统自启和视频组件需在目标机单独验证。
-
-## 接入来源和推送
-
-1. **模型**：在 `.env` 填写 `DEEPSEEK_ENABLED=1`、Key、模型名及输入/输出单价。在“投递设置”确认累计预算。
-2. **微信**：设置 `PUSH_CHANNEL=weixin`。重启后在“投递设置”扫码绑定，向 ClawBot 发一条消息，再测试连接。
-3. **邮箱**：开启邮箱 IMAP，用授权码填写 `IMAP_*` 配置。在“订阅源”填写实际发件地址，主题关键词可选。只读取匹配邮件正文，不修改已读状态、不下载附件。
-4. **YouTube**：添加频道 `@用户名`、频道链接或频道 ID。视频摘要需要安装字幕组件，见[技术说明](docs/TECHNICAL_DESIGN.md#视频内容提取)。
-5. **RSS**：添加公开 HTTPS Feed 地址，读取 Feed 中提供的正文，不自动抓取文章网页。
-
-最后启用来源采集、私聊推送，选择“自动摘要”并确认来源授权，完整自动链路才会运行。只配置模型 Key 不会自动开启摘要。
-
-微信和飞书二选一。使用飞书时设置 `PUSH_CHANNEL=feishu`、`FEISHU_ENABLED=1` 及应用凭证、收件人 `open_id`，机器人需要 `im:message:send_as_bot` 权限。
-
-## 每日日报
-
-- **AIHOT AI 日报**：在“每日日报”开启，每天北京时间 10:00 获取 [AIHOT](https://aihot.news/daily) 当天日报并推送，不额外调用 DeepSeek。10 点后首次开启则从次日开始，当天未发布会稍后重试。
-- **订阅汇总**：将选择“日报”投递的订阅内容按设置时间汇总；启用摘要的内容必须先完成摘要。
-- 点击日报整行查看详情。日期显示为 `YYYY/MM/DD`。
+默认登录系统后启动。仅熄屏且系统未休眠时可继续处理；休眠、关机或服务停止会暂停。Windows/Linux 的真实自启和视频依赖需在目标机验证。
 
 ## 使用边界
 
-- 视频优先取字幕；只有启用本地转写后，无字幕视频才会下载临时音频转写。不读取浏览器 Cookie，不分析画面。
-- 摘要失败或预算不足不会回退为原文推送。失败、修复和重试都计入累计模型预算。
-- 推送成功表示平台已接受，不代表已读。结果不确定时先核查接收端，避免重复发送。
-- 微信发送上下文可能过期，需要本人发消息刷新。网络、上游接口和长视频处理都可能造成延迟。
-- `.env`、`data/` 和备份包含私人信息，不要提交到 Git。
-
-## 维护和开发
-
-```bash
-npm run backup -- backups/manual.sqlite
-npm run check
-npx playwright install chromium
-npm run test:e2e
-```
-
-开发时将 `.env` 设置为 `NODE_ENV=development`、`APP_ORIGIN=http://localhost:5183`、`EMBED_WORKER=1`，运行 `npm run dev`，打开 [localhost:5183](http://localhost:5183)。
-
-本机模式要求 `AUTH_MODE=local`、`HOST=127.0.0.1`，不用于反向代理、端口转发或远程访问。需要保留密码访问时使用 `AUTH_MODE=password`，运行构建后的 `npm run reset-password` 设置密码；本机模式下不会显示密码和退出入口。
-
-[自托管指南](docs/SELF_HOSTING.md) · [功能说明](docs/PRODUCT.md) · [技术与运维](docs/TECHNICAL_DESIGN.md) · [官网预览与发布](docs/WEBSITE.md) · [开发计划](docs/ROADMAP.md) · [验证与排查](docs/QUALITY_AND_RISKS.md)
+- 本机模式只用于本机直接访问，不要反向代理、端口转发或暴露公网。可选密码模式见[技术设计](docs/TECHNICAL_DESIGN.md#本机访问和密码模式)。
+- 邮件只读匹配正文，不下载附件；RSS 只读取 Feed 正文；视频不读取浏览器 Cookie、不分析画面。
+- 摘要需要将授权范围内的正文发送至 DeepSeek，失败、修复和重试都计入累计预算。
+- “已推送”表示平台已接受，不代表已读；结果不确定时先核查，不要盲目重发。微信上下文过期需本人发消息刷新。
+- `.env`、`data/`、日志和备份包含私人信息，不要提交到 Git。
+- 官网仅展示项目介绍，不运行采集推送后台，也不连接你的实例。

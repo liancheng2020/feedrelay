@@ -16,6 +16,18 @@ for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [1280, 720],
     const cta = await page.locator('.hero-actions').boundingBox();
     const visual = await page.locator('.hero-product').boundingBox();
     expect(cta!.y + cta!.height).toBeLessThan(visual!.y);
+    const note = await page.locator('.platform-note').boundingBox();
+    expect(note!.y + note!.height).toBeLessThan(visual!.y);
+    if (width >= 1280) {
+      const visibleRows = await page.locator('.hero-product img').evaluate((image: HTMLImageElement) => {
+        const bounds = image.getBoundingClientRect();
+        const heroBottom = image.closest('.hero')!.getBoundingClientRect().bottom;
+        const visibleHeight = Math.min(bounds.bottom, heroBottom) - bounds.top;
+        // The captured table contains a 45px header and seven 65px rows.
+        return (visibleHeight * image.naturalWidth / bounds.width - 45) / 65;
+      });
+      expect(Math.round(visibleRows * 100) / 100).toBeGreaterThanOrEqual(height >= 1000 ? 7 : height >= 900 ? 5.5 : 3.3);
+    }
     await page.locator('#preview').scrollIntoViewIfNeeded();
     await expect(page.getByRole('tabpanel', { name: 'AI 摘要', exact: true }).getByRole('img')).toBeVisible();
     expect(await page.getByRole('tabpanel', { name: 'AI 摘要', exact: true }).getByRole('img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
@@ -30,6 +42,7 @@ for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [1280, 720],
 
 test('PAGE-02: previews, keyboard selection and accessible zoom work', async ({ page }) => {
   await page.goto('./#preview');
+  await expect(page.getByRole('link', { name: '功能说明', exact: true })).toHaveAttribute('href', 'https://github.com/liancheng2020/feedrelay#功能');
   const tabs = page.getByRole('tablist', { name: '产品界面' });
   await tabs.getByRole('tab', { name: '最新更新' }).click();
   await expect(page.getByRole('tabpanel', { name: '最新更新', exact: true })).toBeVisible();

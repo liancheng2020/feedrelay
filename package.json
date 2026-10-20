@@ -7,7 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "concurrently -k -n api,web \"tsx watch server/main.ts\" \"vite --host 127.0.0.1\"",
+    "dev": "cross-env NODE_ENV=development APP_ORIGIN=http://localhost:5183 EMBED_WORKER=1 concurrently -k -n api,web \"tsx watch server/main.ts\" \"vite --host 127.0.0.1\"",
     "demo": "cross-env FEEDRELAY_DEMO=1 NODE_ENV=development APP_ORIGIN=http://localhost:5183 DATA_DIR=data-demo COOKIE_SECURE=0 IMAP_ENABLED=0 FEISHU_ENABLED=0 npm run dev",
     "build": "tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.server.json && vue-tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json",

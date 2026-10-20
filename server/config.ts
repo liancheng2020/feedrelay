@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DateTime } from 'luxon';
 
@@ -28,37 +29,48 @@ export function verifyPassword(password: string, hash: string) {
     return false;
   return timingSafeEqual(scryptSync(password, salt, 64), Buffer.from(encoded, 'hex'));
 }
-export function readConfig(env = process.env) {
+export function readConfig(env = process.env, fileExists = existsSync) {
   const demo = env.FEEDRELAY_DEMO === '1';
+  const production = env.NODE_ENV ? env.NODE_ENV === 'production' : !demo;
+  const port = Number(env.PORT || 8787);
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new AppError('INVALID_PORT');
   const authMode = env.AUTH_MODE || (demo ? 'password' : 'local');
   if (!['local', 'password'].includes(authMode)) throw new AppError('INVALID_AUTH_MODE');
-  const pushChannel = env.PUSH_CHANNEL || 'feishu';
+  const pushChannel = env.PUSH_CHANNEL || 'weixin';
   if (!['feishu', 'weixin'].includes(pushChannel)) throw new AppError('INVALID_PUSH_CHANNEL');
   const origin = new URL(
     env.APP_ORIGIN ||
-      (env.NODE_ENV === 'production' ? 'http://localhost:8787' : 'http://localhost:5183'),
+      (production ? `http://localhost:${port}` : 'http://localhost:5183'),
   ).origin;
   if (!/^https?:\/\//.test(origin)) throw new AppError('INVALID_APP_ORIGIN');
   if (demo && env.HOST && !['127.0.0.1', 'localhost'].includes(env.HOST))
     throw new AppError('DEMO_LOOPBACK_ONLY');
+  const model = env.DEEPSEEK_MODEL || 'deepseek-flash';
+  // Conservative peak/cache-miss estimate, verified 2026-10-20; not a provider bill.
+  const defaultPrices = model === 'deepseek-flash' ? [2, 8] : [0, 0];
+  const defaultPython = resolve('.cache/youtube-venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const python = env.YOUTUBE_CAPTIONS_PYTHON
+    ? resolve(env.YOUTUBE_CAPTIONS_PYTHON)
+    : !demo && fileExists(defaultPython) ? defaultPython : '';
   const config = {
     demo,
     authMode: authMode as 'local' | 'password',
-    production: env.NODE_ENV === 'production',
+    production,
     origin,
     host: env.HOST || '127.0.0.1',
-    port: Number(env.PORT || 8787),
+    port,
     dataDir: resolve(env.DATA_DIR || (demo ? 'data-demo' : 'data')),
     passwordHash: demo ? hashPassword('demo') : env.ADMIN_PASSWORD_HASH || '',
     sessionSecret: demo
       ? 'feedrelay-local-demo-session-not-for-production'
       : env.SESSION_SECRET || '',
-    cookieSecure: env.COOKIE_SECURE === '1',
-    embedWorker: demo || env.EMBED_WORKER === '1',
+    cookieSecure: enabled(env.COOKIE_SECURE, origin.startsWith('https://')),
+    embedWorker: demo || enabled(env.EMBED_WORKER, true),
     pushChannel: (demo ? 'feishu' : pushChannel) as 'feishu' | 'weixin',
     youtubeProxy: httpProxy(env.YOUTUBE_PROXY_URL || '', 'INVALID_YOUTUBE_PROXY'),
     imap: {
-      enabled: env.IMAP_ENABLED === '1',
+      enabled: enabled(env.IMAP_ENABLED, !!(env.IMAP_HOST || env.IMAP_USER || env.IMAP_PASSWORD)),
       host: env.IMAP_HOST || '',
       port: Number(env.IMAP_PORT || 993),
       user: env.IMAP_USER || '',
@@ -66,22 +78,22 @@ export function readConfig(env = process.env) {
       folder: env.IMAP_FOLDER || 'INBOX',
     },
     feishu: {
-      enabled: env.FEISHU_ENABLED === '1',
+      enabled: enabled(env.FEISHU_ENABLED, pushChannel === 'feishu' && !!(env.FEISHU_APP_ID || env.FEISHU_APP_SECRET || env.FEISHU_OPEN_ID)),
       appId: env.FEISHU_APP_ID || '',
       secret: env.FEISHU_APP_SECRET || '',
       openId: env.FEISHU_OPEN_ID || '',
     },
     deepseek: {
-      enabled: env.DEEPSEEK_ENABLED === '1',
+      enabled: enabled(env.DEEPSEEK_ENABLED, !!env.DEEPSEEK_API_KEY),
       apiKey: env.DEEPSEEK_API_KEY || '',
-      model: env.DEEPSEEK_MODEL || 'deepseek-flash',
-      inputPrice: Number(env.DEEPSEEK_INPUT_CNY_PER_MILLION || 0),
-      outputPrice: Number(env.DEEPSEEK_OUTPUT_CNY_PER_MILLION || 0),
+      model,
+      inputPrice: Number(env.DEEPSEEK_INPUT_CNY_PER_MILLION || defaultPrices[0]),
+      outputPrice: Number(env.DEEPSEEK_OUTPUT_CNY_PER_MILLION || defaultPrices[1]),
     },
     captions: {
-      enabled: env.YOUTUBE_CAPTIONS_ENABLED === '1',
-      python: env.YOUTUBE_CAPTIONS_PYTHON ? resolve(env.YOUTUBE_CAPTIONS_PYTHON) : '',
-      proxy: httpProxy(env.YOUTUBE_CAPTIONS_PROXY_URL || '', 'INVALID_YOUTUBE_CAPTIONS_PROXY'),
+      enabled: enabled(env.YOUTUBE_CAPTIONS_ENABLED, !!python),
+      python,
+      proxy: httpProxy(env.YOUTUBE_CAPTIONS_PROXY_URL ?? env.YOUTUBE_PROXY_URL ?? '', 'INVALID_YOUTUBE_CAPTIONS_PROXY'),
       asr: env.YOUTUBE_ASR_ENABLED === '1',
       model: resolve(env.YOUTUBE_ASR_MODEL || '.cache/asr-model'),
     },
@@ -106,8 +118,6 @@ export function readConfig(env = process.env) {
     !['127.0.0.1', '::1'].includes(config.host) ||
     !['localhost', '127.0.0.1', '[::1]'].includes(new URL(config.origin).hostname)
   )) throw new AppError('LOCAL_ACCESS_LOOPBACK_ONLY');
-  if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)
-    throw new AppError('INVALID_PORT');
   if (
     config.imap.enabled &&
     (!config.imap.host || !config.imap.user || !config.imap.password || config.imap.port !== 993)
@@ -122,13 +132,14 @@ export function readConfig(env = process.env) {
     throw new AppError('INVALID_FEISHU_CONFIG');
   if (
     config.production &&
-    !['127.0.0.1', 'localhost'].includes(new URL(config.origin).hostname) &&
+    !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(config.origin).hostname) &&
     (!config.cookieSecure || !config.origin.startsWith('https://'))
   )
     throw new AppError('PUBLIC_HTTPS_REQUIRED');
   return config;
 }
 const verifyHash = (hash: string) => /^scrypt:[a-f0-9]{32}:[a-f0-9]{128}$/.test(hash);
+const enabled = (value: string | undefined, fallback: boolean) => value ? value === '1' : fallback;
 function httpProxy(value: string, code: string) {
   if (!value) return '';
   try {

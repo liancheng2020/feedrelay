@@ -41,15 +41,15 @@ button svg, a svg { flex-shrink: 0; }
 .icon-button:hover { background: #e9eee7; }
 .menu-toggle { display: none; }
 .hero { position: relative; height: min(850px, calc(100svh - 150px)); min-height: 570px; overflow: hidden; background: #f6f8f5; text-align: center; }
-.hero-copy { position: relative; z-index: 2; padding-top: 44px; }
+.hero-copy { position: relative; z-index: 2; padding-top: 30px; }
 .eyebrow { display: flex; align-items: center; gap: 9px; margin: 0 0 20px; color: var(--green); font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; font-weight: 500; line-height: 1.5; }
-.hero .eyebrow { justify-content: center; }
+.hero .eyebrow { justify-content: center; margin-bottom: 14px; }
 .signal-dot { width: 6px; height: 6px; background: #50965a; }
 h1, h2, h3, p { margin-top: 0; }
-.hero h1 { margin: 0; font-family: Arial, Helvetica, sans-serif; font-size: 104px; line-height: 1.08; font-weight: 600; }
+.hero h1 { margin: 0; font-family: Arial, Helvetica, sans-serif; font-size: 88px; line-height: 1.08; font-weight: 600; }
 .title-dot { color: #5b9260; }
-.hero-line { margin: 17px 0 12px; font-size: 25px; font-weight: 500; line-height: 1.5; }
-.hero-description { margin-bottom: 24px; color: #707c74; font-size: 14px; line-height: 1.85; }
+.hero-line { margin: 12px 0 8px; font-size: 23px; font-weight: 500; line-height: 1.5; }
+.hero-description { margin-bottom: 18px; color: #707c74; font-size: 14px; line-height: 1.85; }
 .hero-actions { display: flex; justify-content: center; align-items: center; gap: 10px; }
 .button { display: inline-flex; justify-content: center; align-items: center; gap: 20px; height: 44px; min-width: 140px; padding: 0 19px; border-radius: 4px; border: 1px solid transparent; font-size: 13px; font-weight: 500; transition: background .2s, transform .2s; }
 .button:hover { transform: translateY(-2px); }
@@ -57,9 +57,9 @@ h1, h2, h3, p { margin-top: 0; }
 .button.primary:hover { background: #2d4737; }
 .button.secondary { border-color: #ced7cb; background: #f6f8f5; }
 .button.secondary:hover { background: #edf1e9; }
-.platform-note { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 17px 0 0; font-size: 10px; color: #6b7769; }
+.platform-note { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 14px 0 0; font-size: 10px; color: #6b7769; }
 .platform-note span { padding-left: 14px; border-left: 1px solid #cfd7cb; }
-.hero-product { position: absolute; z-index: 1; top: 410px; left: 50%; width: min(1240px, calc(100% - 64px)); transform: translateX(-50%); text-align: left; border: 1px solid #dce4da; box-shadow: 0 12px 55px #2035260c; }
+.hero-product { position: absolute; z-index: 1; top: 350px; left: 50%; width: min(1100px, calc(100% - 64px)); transform: translateX(-50%); text-align: left; border: 1px solid #dce4da; box-shadow: 0 12px 55px #2035260c; }
 .hero-product img { display: block; width: 100%; height: auto; }
 .hero-preview-link { position: absolute; z-index: 3; bottom: 18px; right: 28px; display: flex; align-items: center; gap: 20px; padding: 9px 12px; background: #f6f8f5; border: 1px solid #dce4da; color: #69796a; font-family: Consolas, monospace; font-size: 9px; }
 .mobile-break { display: none; }
@@ -133,17 +133,14 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 .image-dialog::backdrop { background: #131b18b3; }
 .image-dialog-toolbar { display: flex; justify-content: space-between; align-items: center; height: 56px; padding-inline: 20px; font-size: 12px; }
 .image-dialog-scroll { max-height: calc(100svh - 120px); overflow: auto; overscroll-behavior: contain; }.image-dialog img { display: block; width: 100%; height: auto; }
-@media (min-width: 1800px) {
-  .hero-copy { padding-top: 60px; }
-  .hero-product { top: 438px; }
-}
 @media (max-height: 760px) and (min-width: 761px) {
   .hero { min-height: 490px; }
-  .hero-copy { padding-top: 26px; }
-  .hero h1 { font-size: 88px; }
-  .hero-line { margin-top: 12px; font-size: 22px; }
-  .hero-description { margin-bottom: 16px; }
-  .hero-product { top: 355px; }
+  .hero-copy { padding-top: 18px; }
+  .hero .eyebrow { margin-bottom: 10px; }
+  .hero h1 { font-size: 76px; }
+  .hero-line { margin-top: 8px; font-size: 22px; }
+  .hero-description { margin-bottom: 14px; }
+  .hero-product { top: 310px; }
 }
 @media (max-width: 1000px) {
   .shell { width: calc(100% - 56px); }

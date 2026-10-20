@@ -65,7 +65,8 @@ test('HOST-03: setup is idempotent and preserves existing configuration bytes', 
   const run = () => spawnSync(process.execPath, [script], { cwd: root, encoding: 'utf8' });
   assert.equal(run().status, 0);
   const original = readFileSync(join(root, '.env'), 'utf8');
-  assert.match(original, /AUTH_MODE=local/);
+  assert.match(original, /DEEPSEEK_API_KEY=/);
+  assert.doesNotMatch(original, /NODE_ENV=|AUTH_MODE=|HOST=127|EMBED_WORKER=|YOUTUBE_PROXY_URL=/);
   assert.match(original, /SESSION_SECRET=[a-f0-9]{96}/);
   assert.equal(run().status, 0);
   assert.equal(readFileSync(join(root, '.env'), 'utf8'), original);
@@ -103,7 +104,7 @@ test('HOST-05: real built server runs from a spaced path and gracefully stops th
   await new Promise(resolve => portProbe.close(resolve));
   mkdirSync(join(root, 'dist', 'server'), { recursive: true });
   writeFileSync(join(root, 'dist', 'server', 'main.js'), `import(${JSON.stringify(pathToFileURL(resolve('dist/server/main.js')).href)});`);
-  writeFileSync(join(root, '.env'), `SESSION_SECRET=${'synthetic-test-'.repeat(4)}\nPORT=${port}\nPUSH_CHANNEL=feishu\nIMAP_ENABLED=0\nFEISHU_ENABLED=0\nDEEPSEEK_ENABLED=0\n`);
+  writeFileSync(join(root, '.env'), `SESSION_SECRET=${'synthetic-test-'.repeat(4)}\nPORT=${port}\n`);
   const dir = join(root, '.cache', 'service');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, 'config.json');

@@ -13,12 +13,13 @@ check('Node.js', Number(process.versions.node.split('.')[0]) === 24, '需要 Nod
 check('配置', existsSync(join(root, '.env')), '缺少时运行 npm run setup；不会覆盖已有配置');
 const env = loadEnvironment(root, process.env, parse);
 const effective = hosted ? hostedEnvironment(env) : env;
+let runtime;
 const { entry, data } = paths(root, effective);
 check('生产构建', existsSync(entry) && existsSync(join(root, 'dist', 'web', 'index.html')), '运行 npm run build');
 if (existsSync(entry)) {
   try {
     const { readConfig } = await import(pathToFileURL(join(root, 'dist', 'server', 'config.js')).href);
-    readConfig(effective);
+    runtime = readConfig(effective);
     check('配置校验', true, hosted ? '托管模式：生产构建、本机免登录、内嵌后台；不修改 .env' : '配置有效，不代表外部连接成功');
   } catch (error) { check('配置校验', false, /^[A-Z_]+$/.test(error.message) ? error.message : '配置格式错误'); }
 }
@@ -28,16 +29,16 @@ try {
   accessSync(existing, constants.W_OK);
   check('数据目录', true, '目录或父目录可写');
 } catch { check('数据目录', false, '当前用户无写入权限'); }
-if (env.YOUTUBE_CAPTIONS_ENABLED === '1') {
+if (runtime?.captions.enabled) {
   try {
-    execFileSync(env.YOUTUBE_CAPTIONS_PYTHON || '', ['-c', 'import youtube_transcript_api, yt_dlp'], { timeout: 15_000, stdio: 'pipe', windowsHide: true });
+    execFileSync(runtime.captions.python, ['-c', 'import youtube_transcript_api, yt_dlp'], { timeout: 15_000, stdio: 'pipe', windowsHide: true });
     check('视频组件', true, 'Python 字幕和 yt-dlp 可导入；未访问 YouTube');
   } catch { check('视频组件', false, '检查 Python 绝对路径并安装 requirements-youtube.txt'); }
 }
-if (env.YOUTUBE_ASR_ENABLED === '1') {
+if (runtime?.captions.asr) {
   try {
-    execFileSync(env.YOUTUBE_CAPTIONS_PYTHON || '', ['-c', 'import faster_whisper, av'], { timeout: 30_000, stdio: 'pipe', windowsHide: true });
-    const model = env.YOUTUBE_ASR_MODEL || join(root, '.cache', 'asr-model');
+    execFileSync(runtime.captions.python, ['-c', 'import faster_whisper, av'], { timeout: 30_000, stdio: 'pipe', windowsHide: true });
+    const model = runtime.captions.model;
     check('本地转写', existsSync(join(model, 'model.bin')) && statSync(join(model, 'model.bin')).size > 0, '检查本地模型；不自动下载');
   } catch { check('本地转写', false, '安装 requirements-asr.txt 并准备本地模型'); }
 }
