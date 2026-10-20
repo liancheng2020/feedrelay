@@ -10,5 +10,5 @@ const env = template
   .replace('SESSION_SECRET=', `SESSION_SECRET=${randomBytes(48).toString('hex')}`);
 await writeFile('.env', env, { flag: 'wx', mode: 0o600 });
 console.log(
-  `Created .env. Your administrator password (shown once): ${password}\nKeep it private. Mail and Feishu remain disabled until configured.\nDevelopment: set APP_ORIGIN=http://localhost:5183 and EMBED_WORKER=1 in .env.`,
+  '已创建 .env。本机模式无需登录；配置来源和推送后即可使用。\n启动：npm run build，然后 npm start。后台任务随主服务运行。',
 );

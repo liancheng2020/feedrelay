@@ -30,6 +30,8 @@ export function verifyPassword(password: string, hash: string) {
 }
 export function readConfig(env = process.env) {
   const demo = env.FEEDRELAY_DEMO === '1';
+  const authMode = env.AUTH_MODE || (demo ? 'password' : 'local');
+  if (!['local', 'password'].includes(authMode)) throw new AppError('INVALID_AUTH_MODE');
   const pushChannel = env.PUSH_CHANNEL || 'feishu';
   if (!['feishu', 'weixin'].includes(pushChannel)) throw new AppError('INVALID_PUSH_CHANNEL');
   const origin = new URL(
@@ -41,6 +43,7 @@ export function readConfig(env = process.env) {
     throw new AppError('DEMO_LOOPBACK_ONLY');
   const config = {
     demo,
+    authMode: authMode as 'local' | 'password',
     production: env.NODE_ENV === 'production',
     origin,
     host: env.HOST || '127.0.0.1',
@@ -97,8 +100,12 @@ export function readConfig(env = process.env) {
       ))
   )
     throw new AppError('INVALID_DEEPSEEK_CONFIG');
-  if (!demo && (!verifyHash(config.passwordHash) || config.sessionSecret.length < 32))
+  if (!demo && ((config.authMode === 'password' && !verifyHash(config.passwordHash)) || config.sessionSecret.length < 32))
     throw new AppError('RUN_NPM_SETUP_FIRST');
+  if (config.authMode === 'local' && (
+    !['127.0.0.1', '::1'].includes(config.host) ||
+    !['localhost', '127.0.0.1', '[::1]'].includes(new URL(config.origin).hostname)
+  )) throw new AppError('LOCAL_ACCESS_LOOPBACK_ONLY');
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)
     throw new AppError('INVALID_PORT');
   if (

@@ -40,6 +40,17 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     );
     ctx.set('Cache-Control', 'no-store');
     try {
+      if (config.authMode === 'local') {
+        const origin = new URL(config.origin);
+        const port = ctx.req.socket.localPort;
+        const hosts = [origin.host, `127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
+        const forwarded = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip']
+          .some(header => ctx.get(header));
+        if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ctx.req.socket.remoteAddress || '') ||
+          !hosts.includes(ctx.get('host')) || forwarded ||
+          (ctx.get('origin') && ctx.get('origin') !== config.origin) || ctx.get('sec-fetch-site') === 'cross-site')
+          throw new AppError('LOCAL_ACCESS_ONLY', 403);
+      }
       await next();
     } catch (error) {
       const known = error instanceof AppError;
@@ -66,15 +77,20 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   );
   app.use(async (ctx, next) => {
     if (!ctx.path.startsWith('/api/')) return next();
-    if (ctx.session?.authenticated) {
+    if (config.authMode === 'local' && ctx.session?.authenticated) {
+      auth.revoke(ctx.session.sid);
+      ctx.session = null;
+    } else if (ctx.session?.authenticated) {
       const active = auth.valid(ctx.session.sid);
       if (!active) ctx.session = null;
       else ctx.session.mustChangePassword = !!active.must_change;
     }
     const publicPath = ['/api/health', '/api/session', '/api/login'].includes(ctx.path);
-    if (!publicPath && !ctx.session?.authenticated) throw new AppError('UNAUTHORIZED', 401);
-    if (ctx.session?.mustChangePassword && !['/api/session', '/api/password', '/api/logout', '/api/health'].includes(ctx.path))
+    if (config.authMode !== 'local' && !publicPath && !ctx.session?.authenticated) throw new AppError('UNAUTHORIZED', 401);
+    if (config.authMode === 'password' && ctx.session?.mustChangePassword && !['/api/session', '/api/password', '/api/logout', '/api/health'].includes(ctx.path))
       throw new AppError('PASSWORD_CHANGE_REQUIRED', 403);
+    if (config.authMode === 'local' && ['/api/login', '/api/password', '/api/logout'].includes(ctx.path))
+      throw new AppError('LOCAL_AUTH_NOT_REQUIRED', 409);
     if (!['GET', 'HEAD'].includes(ctx.method)) {
       if (ctx.get('origin') !== config.origin) throw new AppError('INVALID_ORIGIN', 403);
       if (ctx.path !== '/api/login' && ctx.get('x-csrf-token') !== ctx.session?.csrf)
@@ -112,10 +128,11 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     ctx.session ??= {};
     ctx.session.csrf ||= randomBytes(24).toString('hex');
     ctx.body = {
-      authenticated: !!ctx.session.authenticated,
+      authenticated: config.authMode === 'local' || !!ctx.session.authenticated,
+      authMode: config.authMode,
       csrf: ctx.session.csrf,
       demo: config.demo,
-      mustChangePassword: !!ctx.session.mustChangePassword,
+      mustChangePassword: config.authMode === 'password' && !!ctx.session.mustChangePassword,
     };
   });
   router.post('/api/login', (ctx) => {

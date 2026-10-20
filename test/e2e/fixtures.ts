@@ -9,13 +9,14 @@ export { expect };
 export type { Page } from '@playwright/test';
 
 // A fresh server and database per test also isolates Playwright retries.
-export const test = base.extend<{ demoServer: void }>({
-  demoServer: [async ({}, use, info) => {
+export const test = base.extend<{ demoServer: void; authMode: 'local' | 'password' }>({
+  authMode: ['password', { option: true }],
+  demoServer: [async ({ authMode }, use, info) => {
     const dir = await mkdtemp(join(tmpdir(), 'feedrelay-e2e-'));
     const child = spawn(process.execPath, [resolve('dist/server/main.js')], {
       env: { PATH: process.env.PATH, HOME: process.env.HOME,
         DOTENV_CONFIG_PATH: join(dir, '.env'),
-        NODE_ENV: 'production', FEEDRELAY_DEMO: '1',
+        NODE_ENV: 'production', FEEDRELAY_DEMO: '1', AUTH_MODE: authMode,
         HOST: '127.0.0.1', PORT: '8799', APP_ORIGIN: 'http://127.0.0.1:8799',
         DATA_DIR: dir, COOKIE_SECURE: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],

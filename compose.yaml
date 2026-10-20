@@ -9,6 +9,7 @@ services:
     stop_grace_period: 300s
     env_file: .env
     environment:
+      AUTH_MODE: password
       HOST: 0.0.0.0
       PORT: 8787
       DATA_DIR: /app/data
@@ -26,6 +27,7 @@ services:
     command: ['npm', 'run', 'worker']
     env_file: .env
     environment:
+      AUTH_MODE: password
       DATA_DIR: /app/data
       EMBED_WORKER: 0
     volumes: ['state:/app/data']

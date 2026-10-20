@@ -1,331 +1,109 @@
-# 技术设计
+# 技术与运维
 
-FR-40：保留koa-session签名、HttpOnly、SameSite及CSRF/Origin校验。v5新增admin_sessions，仅存随机会话标识的SHA-256摘要、绝对有效期和默认密码待修改标记；每次API访问验证服务端记录。管理密码哈希使用既有scrypt格式，meta中的admin-password优先于环境初始值。改密事务保存哈希并删除全部会话；恢复备份清除会话。未登录统一401，已登录CSRF失败403。重置命令仅交互终端输出随机密码，不写正文或凭证日志。
+## 结构
 
-FR-39：latestDelivery按created及rowid选取原item和summaries.output_item关联的最新delivery，并解析日报part状态。列表计数、分页和详情共用该关联，避免重复行。pushStateSql统一合并状态用于筛选与展示，保留原status和错误字段；无需迁移。
+| 层 | 实现 | 职责 |
+| --- | --- | --- |
+| 页面 | Vue 3、TypeScript、Vite、Lucide | 订阅、列表、详情、设置、日报 |
+| API | Koa、koa-session | 请求校验、配置和任务操作 |
+| 存储 | Node.js SQLite、WAL | 内容、游标、任务、发送记录、用量 |
+| 后台 | Engine、数据库租约 | 定时采集、摘要、日报和发送 |
+| 来源 | RSS Parser、ImapFlow、MailParser、yt-dlp | Feed、邮件和视频文本提取 |
+| 摘要 | DeepSeek Chat Completions | 全文提炼、结构校验和要点输出 |
+| 推送 | 微信 ClawBot / 飞书应用机器人 | 当前绑定目标的纯文本消息 |
 
-FR-38：Aihot使用https://aihot.news/api/v1/dailies/latest，20秒请求上限、256KB响应上限、禁止重定向；只接收当天版次。meta保存enabled/startDate/nextCheck/lastDate/error，每小时重试并遵守Retry-After。复用worker租约和digest_batches唯一slot=aihot:日期，事务写入digest_part投递，分段不截断，沿用发送未知结果和预算限额。固定Asia/Shanghai 10:00独立于订阅汇总时间；禁用取消待发送，恢复备份默认关闭。不安装或运行第三方框架。
+新安装默认 `EMBED_WORKER=1`，API 和后台任务同进程运行。设置为0时，用 `npm run worker` 独立启动后台，两者共享 `DATA_DIR`。进程锁和数据库租约避免重复运行任务。
 
-FR-37：toggle在来源持续启用且notify变化时只更新通知开关、清理孤立投递并记事件，保留generation、游标、初始化和摘要授权。真正暂停/恢复仍沿用原取消及基线规则。当前自动摘要依赖新条目的投递任务，因此完整自动链路须同时开启notify与summary_mode=auto。
+## 完整链路
 
-FR-36：SummaryService的入队和失败重试统一采用20000码元上限，与现有非字幕模型输入规模一致；不变更提示词、缓存指纹或历史用量。非字幕仍单次全文提炼，不引入分块/额外请求，前端超限提示同步。
+1. 后台约每5秒检查到期任务；来源实际采集频率由设置决定。
+2. YouTube先读频道RSS，404/5xx且已配置yt-dlp时备用读取最近15条上传元数据。邮箱按UID只读匹配邮件；RSS读取公开Feed。
+3. 事务保存内容、来源关联和游标。先落库再推进游标，按内容键去重；首次基线不推送历史。
+4. 开启摘要的订阅创建或复用摘要任务。按需模式等待用户操作；自动模式处理新内容。
+5. 摘要成功后，将标题和编号要点写入待推送记录。失败不发布部分结果，不回退为原文。
+6. 即时记录直接等待发送；日报记录由汇总窗口生成消息部分。每次发送前检查来源、目标和内容是否仍有效。
+7. 保存平台结果和尝试记录。明确可重试的失败有限重试，结果不确定转人工核查。
 
-FR-35：EXAMINE缺少UIDNEXT时，以exists对应的最后一条序号FETCH UID确定上界；非空且无法取得UID则失败，不推进基线。UID SEARCH范围后排序取100个真实UID，再FETCH必要头部；scannedUpper记录搜索批次边界，即使SEARCH后邮件被删除也不越过后续批次。仅匹配正文读取，正文失败保留持久重试后再推进游标。无schema迁移。
+发送与摘要队列分开；发送领取时检查摘要就绪条件，所以后台先检查发送队列也不会提前发原文。手动摘要优先于尚未开始的采集和自动摘要，不中断正在执行的任务。
 
-FR-34：stats.pending/unknown与sources.backlog的投递计数关联items并限定expired=0。原删除/到期逻辑已使原条目及衍生摘要/日报分片失效；仅修正查询范围，保留unknown状态、attempts、今日尝试和历史已发送计数，不改数据库内容或schema。
+## 数据和一致性
 
-FR-33：勾选框显式覆盖普通输入框的40px min-height，统一为16px、零外边距并居中对齐；SummarySettings说明使用通栏header与8px段落间隔，表单行距16px，移除说明/用量/按钮的叠加间距。只改样式和过时的推送说明，不改设置保存逻辑。
+数据库当前为schema v5。主要表：
 
-FR-32：GET /api/items接受pageSize=10/20/50/100，其余取20；返回page/pageSize/total/items。先按同一筛选计数，再将page限制到有效范围，SQL参数化LIMIT/OFFSET；前端同步服务端页码，每页条数与原筛选共用回首页加载逻辑，无持久数据迁移。
+- `sources`、`mailbox_cursors`：来源配置、代次和采集位置。
+- `items`、`source_items`：内容、去重键和来源关联。
+- `jobs`、`summaries`：采集/摘要任务、状态和执行租约。
+- `deliveries`、`attempts`、`digest_batches`：发送快照、尝试和日报批次。
+- `model_calls`：每次模型请求的预留费用和实际用量。
+- `meta`、`events`、`locks`、`admin_sessions`：设置、审计、锁及可选登录会话。
 
-FR-31优先于旧补充通知设计：Store.put为AI来源创建空快照原投递，error=SUMMARY_REQUIRED；SummaryService.prepareDeliveries仅在最新有效摘要成功后填充标题/编号要点，resolution记录summary:<id>。即时claim和日报冻结均排除未就绪快照；失败不降级。发送重试保留快照与投递ID，不再请求模型。人工推送相同摘要复用原记录；仅采集/历史条目的明确手动推送仍可建立独立快照。摘要授权失效取消准备好的未发投递及相关日报分片，保留记录。无schema升级。
+消息排队后保存快照；目标变化不把旧记录自动改投。暂停来源、删除内容、授权变化会使相关未发送任务失效。摘要缓存依据内容、范围、模型配置、授权及目标校验；失败重试不清空既有费用。
 
-FR-30：本地ASR使用BatchedInferencePipeline，batch_size=4、beam_size=3、CPU int8/4线程；保留逐段时间戳与完整音频，优先<=64kbps音轨，缺少时回退可用音轨。手动摘要优先于自动摘要；已有自动排队任务可原地提升优先级，有手动任务时不启动下一条来源检查，但不打断正在运行的网络请求或转写。summary_stage事件仅记录阶段变化，便于区分提取与模型耗时。无新队列、schema或依赖。
+模型请求前事务预留额度，收到usage后计账；失败和修复也占用预算。累计预算不会每天自动重置。列表、筛选、详情统一关联原内容与其最新有效摘要的发送记录。
 
-FR-27：DELETE /api/items/:id要求会话、Origin/CSRF和confirmed=true；事务内复用expireItem(id,true)，另以meta的item-deleted:<id>标记列表隐藏与详情404。保留items.key，后续put遇到expired条目不恢复正文或投递；沿用既有保留周期，不保证超过去重保留窗口后永久屏蔽。正文/摘要清理与未发快照失效原子执行，模型调用账本不删除；运行中的摘要受现有token/授权围栏阻止再次发布。无schema升级。
+## 视频内容提取
 
-FR-24：在原CaptionAdapter中组合可选的本地ASR，仅YOUTUBE_NO_CAPTIONS/EMPTY_CAPTION触发；读取公开音频后由faster-whisper/PyAV直接解码，不依赖系统ffmpeg。复用Caption数据结构，新增transcribed类型及ASR模型标识，哈希与证据校验覆盖真实来源。原summary material缓存和调用账本保留。阶段进度写meta临时键供独立Web/Worker读取，结束删除；无新schema/队列。最长60分钟音频、100MB、转写30分钟硬超时、原48000码元全文上限；超限拒绝，不截断。仅字幕路径仍保持45秒提取限制；启用ASR的总任务上限增加以容纳本地计算，不增加模型请求预算。
+安装独立Python环境：
 
-视频摘要由模型选择原始时间段标记，程序生成该段前120个字符的定位片段，避免繁简转换、识别错字被模型改写后触发引文失败。不存在的标记拒绝；分块合并只能选择候选原文，最终仍校验完整来源哈希、片段及时间链接。定位片段不证明语义支持，转写错误需要回听核查。yt-dlp字幕PO Token警告只映射为受限错误，不打印签名URL或当作无字幕处理。
-
-版本：D4 / 2026-10-17。继续实现 v0.3 候选版；本文区分现有实现、运行限制与后续计划，不代表真实服务已经验收。
-
-FR-23覆盖详情展示：YouTube不渲染items.text中的发布者简介，已获取字幕仍带时间定位；邮件/RSS正文不受影响。详情生成明确提交captions，来源级feed配置保留兼容。API列表返回summaryError，与summaryStatus一起由web/summary-state.ts映射展示；不改数据库状态机、字幕缓存或授权指纹。YOUTUBE_NO_CAPTIONS/EMPTY_CAPTION仍记录failed，但界面显示暂无可用字幕；显式重试复用原队列，不新增模型预算，不自动回退简介。模型与网络错误仍保留具体原因。
-
-## 1. 架构与技术选择
-
-FR-21补充：微信与飞书由`PUSH_CHANNEL`选择一个活动通道，默认飞书；不加入OpenClaw运行时。`server/weixin.ts`实现公开iLink HTTP JSON接口的受限子集：QR配对、绑定人消息长轮询、纯文本发送。新增QR仅使用本地qrcode库生成PNG，不调用第三方二维码服务。需求和边界见PRODUCT中的FR-21，验收见QUALITY_AND_RISKS。
-
-```text
-管理页面 -> 鉴权 API -> SQLite 持久化存储
-                         ^
-                         |
-Worker: 到期调度 -> 来源适配器 -> 规范化条目 -> 待发送记录 -> 飞书适配器
-                         |
-                         +-> 可选本地 Sift 模块 -> 受控模型请求 -> 摘要/独立补充通知
+```bash
+python3 -m venv .cache/youtube-venv
+.cache/youtube-venv/bin/python -m pip install -r requirements-youtube.txt
 ```
 
-| 部分 | 选择 | 原因与约束 |
-| --- | --- | --- |
-| 服务端 | TypeScript + Node.js 受支持的 LTS + Koa | 沿用已有技术经验，不引入新的业务框架学习负担 |
-| 管理页 | Vue 3 + TypeScript + Vite | 仅三类管理界面，不构建完整阅读器 |
-| 存储 | SQLite、版本化迁移、事务与唯一约束 | 单节点个人使用；不将 JSON 文件或内存 Map 作为可靠状态存储 |
-| RSS/Atom | rss-parser | 处理结构化 Feed，支持 YouTube 自定义字段 |
-| 邮箱连接 | ImapFlow | 处理 TLS、UID、只读邮箱与连接生命周期 |
-| MIME | MailParser | 解析邮件正文，解析完成不代表 HTML 已安全 |
-| HTML 清理 | 经核验的成熟 sanitizer | 删除危险元素与属性，禁用远程图片；不用正则清洗 HTML |
-| 运行 | 同仓库 Web 与 Worker 两个入口 | 相同应用镜像，独立进程，挂载同一节点的数据卷 |
-| 调度与发送 | 数据库任务 + 持久化待发送表 | 暂不引入 Redis 或外部队列 |
+设置 `YOUTUBE_CAPTIONS_ENABLED=1`，`YOUTUBE_CAPTIONS_PYTHON` 填该环境Python的绝对路径。优先人工字幕，其次自动字幕，保留时间定位。
 
-实现使用 Node.js 24 自带 `node:sqlite`、Koa + koa-session、Vue3 + Vite；依赖精确锁定于 package-lock.json。Vue 类型工具暂不兼容 TypeScript 7 的导出结构，固定 TypeScript 5.9.3 并通过类型检查，避免只追新版本。
+需要无字幕音频转写时，继续安装并下载本地模型：
 
-首版不提供公开账户注册。使用成熟会话组件实现单用户登录，环境配置密码哈希；会话 Cookie 使用 HttpOnly、适当的 SameSite、生产 HTTPS 下 Secure。修改接口检查 Origin 与 CSRF，密码和会话值不写日志。
+```bash
+.cache/youtube-venv/bin/python -m pip install -r requirements-asr.txt
+.cache/youtube-venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-base', local_dir='.cache/asr-model', allow_patterns=['config.json','model.bin','tokenizer.json','vocabulary.*','preprocessor_config.json'])"
+```
 
-## 2. 模块边界
+设置 `YOUTUBE_ASR_ENABLED=1`；其他模型位置用 `YOUTUBE_ASR_MODEL` 指定。模型需提前准备，运行时不会自动下载。
 
-| 模块 | 职责 | 不负责 |
-| --- | --- | --- |
-| 来源适配器 | 连通性、基线、增量读取、条目标准化 | 发送消息、模型规划 |
-| 入库服务 | 来源版本校验、去重、游标与投递的事务处理 | 远程 HTTP 副作用 |
-| 调度器 | 创建到期任务、退避、互斥和租约 | 把 setInterval 内存状态当唯一任务记录 |
-| 投递服务 | 渲染稳定通知、节流、发送与结果分类 | 重抓内容、重复生成摘要 |
-| 管理 API | 鉴权、来源管理、查看状态、显式重试 | 向前端返回真实 Key |
-| 摘要适配器 | v0.3 可选增强 | 决定是否订阅、变更收件人、读取任意邮箱 |
+仅字幕确实缺失或为空时尝试本地转写；网络或登录限制不会触发绕过。使用faster-whisper完整处理音频，任务结束清理临时文件，不下载视频画面。
 
-避免为未来十种来源编写通用插件平台。定义最小适配接口即可：连接测试、建立基线、读取增量、规范化结果。
-
-## 3. 核心数据模型
-
-以下是逻辑模型，不是最终 SQL；字段或索引变更必须附迁移和测试。
-
-| 实体 | 关键字段 | 约束 |
-| --- | --- | --- |
-| sources | id、type、name、配置引用、enabled、generation、初始化状态、next_check_at、last_success_at、last_error | 配置变化增加 generation；密钥不进入该配置 |
-| mailbox_cursors | account_ref、folder、uidvalidity、last_uid、基线与覆盖状态 | 同一账户/文件夹共用游标，与 Newsletter 规则分离 |
-| items | id、kind、canonical_key、标题、来源时间、discovered_at、正文状态、内容版本、保留时间 | canonical_key 唯一；正文删除后仍可保留最小去重标记 |
-| source_items | source_id、item_id、匹配规则版本 | 多规则命中同一邮件只建立一个条目，关联唯一 |
-| jobs | id、kind、resource_id、generation、status、attempt、available_at、lease_token、lease_until、error | 同一资源不并发检查；领取与完成使用租约令牌 |
-| deliveries | id、item_id、destination_ref、status、消息快照、mode、batch_id、part_id、attempt、available_at、lease、人工操作记录 | item_id 唯一，首次排队固定路由；分片是独立投递，原始成员指向 part_id |
-| digest_batches | id、slot、timezone、cutoff、created、destination、total_parts | slot 唯一；冻结批次和所有分片/成员在同一事务完成 |
-
-单一飞书应用与指定接收 open_id、单一邮箱账户的凭证保存在环境变量或权限受限的部署 Secret 中，数据库仅存稳定目标指纹。界面不提供完整凭证或收件 ID 回显。应用仅申请出站机器人发送权限；不接收事件、读取聊天历史或查询通讯录。
-
-重要索引：待执行任务的状态和 available_at、待发送状态和 available_at、来源检查时间、内容 canonical_key、账户/文件夹游标。仅在有必要的查询上建索引。
-
-### 3.1 时间与内容标识
-
-FR-21凭证例外：微信扫码后Token、绑定人ID、上下文与游标必须持久化，存入meta的`weixin_account`；扫码中的短期状态存入`weixin_pair`。两者使用`SESSION_SECRET`派生的AES-256-GCM密钥加密，不导出到来源配置；备份恢复后删除两项，必须重新扫码。不要修改密钥来尝试修复网络问题。加密不保护已经被攻陷的本机进程；备份仍需私密保管。
-
-- 数据库保存 UTC 时间，展示、每日发送限额与后续日报按配置时区计算。
-- 区分 `published_at`、`received_at` 和 `discovered_at`，不能用一个时间替代所有语义。
-- 视频 canonical_key 为 `youtube:{videoId}`，不使用可变化的标题或整条 URL。
-- 邮件身份以账户引用、文件夹、UIDVALIDITY 和 UID 构成；Message-ID 可作为辅助信息，不单独当作可靠唯一键。
-- 不同邮箱收到相同 Newsletter，首版允许视为不同条目；跨邮箱语义去重不在范围内。
-- 邮件多个规则命中时共用一个 item 和目标投递。内容更新、显示改名不能生成第二条自动投递。
-
-## 4. YouTube 增量流程
-
-FR-28：Feed 404映射为可重试的YOUTUBE_FEED_NOT_READY，释放响应体，至少等待60秒后复用既有队列重试；每个任务仍最多5次，后续周期检查继续。错误不写成功缓存或推进基线，不清理旧内容。403仍不自动重试。
-
-FR-29：Engine通过createYoutubeFeed组合RSS和备用上传元数据。仅404/5xx触发备用，403/429不触发；复用YOUTUBE_CAPTIONS_PYTHON及YOUTUBE_PROXY_URL，无新增配置项。youtube-uploads.py使用yt-dlp读取UU上传播放列表（包含普通视频、Shorts及已结束直播，不只读取/videos页），最多15条、120秒；复用隔离子进程及停止信号。排除正在直播与预告，校验频道/视频ID、真实timestamp、重复条目和非空窗口；失败不写库。备用结果清空RSS条件缓存，对已有key不覆盖正文/摘要，未知旧视频沿用baseline过滤。成功后仍由现有事务和队列入库；页面只显示任务状态，错误码保留后台。备用窗口同样不保证停机期间完整覆盖。
-
-1. 添加时支持ID/标准链接与@handle，后者按FR-20读取频道页并解析固定UC ID；只保存ID。生成受控的频道Feed地址，不直接抓取任意用户URL。
-2. 固定YouTube HTTPS主机，限制响应体积、超时与重定向；解析Atom及视频ID、频道ID、发布时间与简介。
-3. 首次成功检查在事务中登记当前可见 ID，建立静默基线；只有整体成功才能设置 initialized。
-4. 后续检查将未见过的视频保存为 item；在同一事务中创建关联与待发送记录，并更新已持久化的扫描状态。
-5. 已有视频只更新可变元数据；标题和简介变更不再发送“新视频”。
-6. 支持条件请求时使用 ETag / Last-Modified；304 是成功检查，不是抓取错误。
-
-不要仅取最新一条，也不要只按“发布时间大于上次检查时间”过滤。对已知旧历史重新进入 Feed 的情况，结合静默基线、去重标记和可见覆盖信息保守处理；有争议时标记待核查，不承诺算法可重建完整历史。
-
-Feed 不是完整上传日志，停机后无法证明全量覆盖时记录 `coverage_uncertain`。FR-29增加有限的公共上传元数据备用读取，不调用官方Data API；全量历史回填仍不在范围内。
-
-未来 WebSub 回调也会包含元数据更新，仍必须复用同一入库去重路径，不能新增一个绕过去重的推送入口。
-
-## 5. 邮件增量流程
-
-### 5.1 初始化与规则启用
-
-1. 通过 TLS 验证的只读 IMAP 连接打开明确文件夹。
-2. 获取 UIDVALIDITY 和 UID 边界；首次启用只记录边界，不扫描整个历史正文。
-3. 每条新规则保存自己的启用边界，不能因使用同一邮箱旧游标而回推大量历史。
-4. 连接或边界读取失败时保持未初始化。连接预览只读取用户授权的小范围样例，原文不进入诊断日志。
-
-### 5.2 周期扫描
-
-1. 同账户/文件夹串行扫描，在本轮开始捕获 UID 上界，分批处理游标之后的 UID。
-2. 先获取必要信封、日期和结构信息，在内存按有效规则筛选；非匹配邮件不持久化主题和正文。
-3. 匹配项使用 BODYSTRUCTURE 定位文本正文，优先纯文本、其次 HTML，避免下载附件；限制每封读取量，超过上限明确标记，不假装已经完整获取。
-4. 使用成熟 MIME 解析库解码；HTML 转为安全预览，外链不自动访问，远程图片不加载。
-5. 将成功获取的匹配条目、来源关联和待发送记录入库后，才提交对应游标进度。
-6. 正文暂时读取失败时，必须持久化一个带 UID 身份的正文获取任务后才能推进该批游标；不能跳过失败邮件又没有恢复任务。
-
-服务重启后重跑同一批 UID，由唯一约束避免重复。启用后到达但邮件 Date 较旧的条目仍被处理；读过的邮件同样能被发现。
-
-### 5.3 UIDVALIDITY 变化
-
-检测到变化时不能继续套用旧 UID 游标。保留故障记录并暂停自动增量，向用户提示重新建立基线可能遗漏旧窗口；用户确认后重建基线。自动全量回扫和跨纪元精确去重不在 v0.1。
-
-### 5.4 只读约束
-
-禁止 STORE 已读标记、MOVE、DELETE、EXPUNGE、SMTP 发送和自动点击邮件链接。使用所选 IMAP 库的只读与不置已读读取方式，并以协议模拟测试确认，而不是仅靠变量命名表达只读。
-
-## 6. 调度、租约与配置变化
-
-抓取任务状态：`pending -> running -> succeeded / retry_wait / failed / cancelled`。
-
-- 根据持久化 next_check_at 创建到期任务；重启只恢复有限到期任务，不立即并发补跑所有遗漏周期。
-- 同资源互斥；SQLite 短事务原子领取，使用 lease_token 校验完成结果；旧 Worker 不能覆盖新租约结果。
-- 网络和解析工作放在事务外；事务只处理必要读写，开启合适的 busy_timeout 与 WAL，实测并发后确定参数。
-- 确定的暂时失败采用抖动退避，总尝试最多 5 次；建议首次之后 1、5、15、60 分钟，遵守服务端 Retry-After。
-- 无效配置和认证失败不高频重试，要求用户修正后恢复。
-- 抓取租约过期可重试；入库唯一约束使同一内容的重复抓取安全。
-- 配置变化或来源暂停增加 generation，Worker 入库前检查状态与版本；旧任务不得继续创建新推送。
-- 暂停或删除时取消相关未执行工作。已经进入网络发送的请求无法保证撤回，UI 必须提示。
-
-## 7. 投递状态与不确定性
-
-投递状态：`pending -> sending -> sent / retry_wait / failed / unknown / cancelled`。
-
-| 情况 | 处理 |
+| 输入 | 上限 |
 | --- | --- |
-| HTTP 与飞书业务结果均明确成功 | 记录 sent，表示平台确认接收，不表示用户已读 |
-| 能确认未送出的连接失败，或平台明确拒绝且允许重试 | 限次进入 retry_wait |
-| 无效应用凭证、目标或权限 | failed，提示修正，不无限重试 |
-| 发送超时、响应无法判定，或发送过程中进程退出 | unknown，不自动当作确定失败重发 |
-| 平台已接收但本地确认落库失败 | 恢复后仍按 unknown 处理，不能伪造确定结果 |
+| 邮件 / RSS 正文 | 20000码元、2次模型请求、60秒 |
+| 视频文本 | 48000码元，按约12000码元分段，最多12次模型请求 |
+| 字幕任务 | 4分钟 |
+| 含本地转写的任务 | 最长60分钟视频、100MB音频、总任务35分钟 |
 
-使用持久化的消息快照和尝试记录，自动重试不改变收件人、不重新抓取、不重新摘要。HTTP 200 不自动等于业务成功；应用机器人先获取 tenant_access_token，再调用 im/v1/messages，固定 receive_id_type=open_id。仅 code=0 且 HTTP 成功标记 sent；发送5xx、超时或断线保守记 unknown。明确429或发送前 token 获取失败才可按预算重试。目标指纹变化阻止旧队列外发；人工重发需重新确认。
+超限直接报错，不静默截断。转写和模型均可能出错，原文定位仅用于核查，不保证结论正确。
 
-发送前检查目标、来源是否有效和每日剩余额度，以短事务领取和保留额度，避免多任务超过上限。结果不明也计入本日尝试额度；取消未发送预留时按事务回收。
+## 网络和凭证
 
-`sending` 的租约过期后转 unknown，不像抓取任务一样自动重跑。用户可以在看到重复风险后选择“按已发送处理”或“明确重发”，人工判断与平台确认必须分别记录，不覆盖原始尝试。
+`.env` 保存接入配置，不提交到Git。频道解析/RSS用 `YOUTUBE_PROXY_URL`，字幕/音频用 `YOUTUBE_CAPTIONS_PROXY_URL`，两者独立且不继承浏览器代理。远程环境中的127.0.0.1指远程机器自身。
 
-首版每条内容一条通知、每轮最多 5 条。新内容量大时分批送达，不能把排队条目标记为已发送。每日上限在时区边界重置并恢复积压，积压超过正文保留期时不再外发已删除正文。
+RSS仅允许公共HTTPS地址，检查DNS和每次重定向，拒绝私网、账号和Token等受限地址。邮件只读，不取附件。
 
-## 8. 管理接口与前端
+微信凭证使用 `SESSION_SECRET` 派生密钥进行AES-GCM加密；修改该密钥会影响已有绑定。入站消息只更新绑定人的发送上下文，不触发任务或模型调用。微信和飞书二选一。
 
-FR-22：列表只读接口附带有效摘要状态；hash路由`#items/:uuid`进入完整详情，支持刷新与浏览器返回，不再用抽屉。生成POST接受显式content/refresh，按需授权不打开自动模式；GET不取字幕或调用模型。保留字幕仅在有效授权内返回给登录用户。视频封面仅固定i.ytimg.com，点击播放才载入固定youtube-nocookie.com；邮件/RSS不加载远程图片。
+## 本机访问和密码模式
 
-`POST /api/items/:id/summary/push`校验登录/Origin/CSRF/确认、活动通道就绪、最新有效row与result修订指纹，事务创建冻结消息。自动补充与手动推送复用queueOutput/output_item和原attempt账本；pending/sent/unknown等重复请求返回同一投递，已取消且未发送的快照可明确重新排队。手动确认写入仅对应本次输出item的审计事件，使仅采集来源可单条推送，但不能绕过源停用/代次变化/正文到期；重试发送快照不再调用模型。重新生成取消旧待发快照，原发送中或已发消息不能撤回，旧客户端修订指纹不可发新结果。
+`AUTH_MODE=local` 是默认值。监听仅允许127.0.0.1或::1，页面Origin必须为回环地址。后端检查真实连接地址、Host、Origin和转发头，拒绝跨站或代理请求；修改操作仍需要会话Cookie及CSRF令牌。本机会话不生成密码登录凭证。
 
-先定义行为和鉴权测试，再固定实际 API 路径。接口分组如下：
+本机模式不提供改密和退出接口，不用于反向代理、端口转发或远程共享。需要登录访问时显式设置 `AUTH_MODE=password`，运行构建后的 `npm run reset-password` 设置新密码。密码8–16位，默认会话8小时，可选30天；改密撤销全部会话。部署为公网服务还需正确配置HTTPS和代理，不能直接开放本机模式。
 
-- 登录、退出、当前会话；健康检查只暴露最小存活信息。
-- 来源列表、添加、非敏感编辑、暂停、恢复、删除、检查与有限预览。
-- 更新列表和安全正文；投递状态、失败详情、显式重试与未知状态处置。
-- 部署配置状态、可修改的非敏感参数、保留策略与告警。
+Compose使用密码模式，容器内部监听0.0.0.0，宿主端口仅发布到127.0.0.1。默认镜像不包含本地转写依赖，Docker及公网代理部署需在目标环境单独验证。
 
-所有私人内容接口鉴权。修改操作防 CSRF、受限频；长任务返回任务标识，不阻塞 HTTP 等待整轮采集。列表分页，状态明确，不用成功提示掩盖后台失败。
+## 日报
 
-管理页采用紧凑表格与状态筛选；图标按钮提供名称和提示。手机端可查看错误和处置任务，不将界面做成营销首页。
+AIHOT请求 `https://aihot.news/api/v1/dailies/latest`，只接收当天版次；北京时间10点后获取，未就绪每小时重试并遵守Retry-After。按日期唯一批次去重，保留来源链接，不调用DeepSeek。
 
-## 9. 保留、清理与恢复
+订阅汇总按设置时区和时间执行，每批最多500条，只纳入已就绪内容。消息过长拆为多部分，各部分独立记录发送结果。
 
-- 依据 PRODUCT.md 的 7 / 30 / 90 天策略分别清理正文、记录与最小去重标记，不能删除整个 item 导致旧内容重新通知。
-- 不因正文到期而丢弃未完成任务状态；清除可能包含原文的消息快照，对待发项转为可见的 `content_expired` 失败，禁止继续外发过期正文。
-- unresolved 的 failed/unknown 记录保留最小诊断；不因此无限期保留私人正文。用户删除请求优先于普通保留策略。
-- 删除来源前明确是否删除历史；只清除其关联，避免误删其他来源仍使用的共享 item。最后一个来源删除后取消该条目的未完成发送。
-- 数据库备份使用 SQLite 的在线备份机制或一致性快照，不在运行时只复制主文件忽略 WAL。
-- 备份恢复后，原 pending/sending/unknown 投递默认进入人工核对区：恢复快照可能比真实发送记录旧，不自动大规模重放。恢复已知来源的定时采集仍走去重路径。
-- 单 Worker 优雅退出停止领取新任务；已发出而未确认的请求保留不确定状态。只读检查点恢复需要测试证据。
+## 升级和恢复
 
-## 10. 安全与隐私边界
+升级前备份，停止Web和Worker后安装依赖、构建并重启；启动时自动迁移数据库，旧版本不能直接打开新schema。
 
-- YouTube 首版使用受控主机和路径；解析库只解析已安全取得的内容。未来通用 RSS 开放前，必须验证协议、DNS、重定向目标、私网/环回/云元数据地址与响应上限，防 DNS 重绑定。
-- 邮箱服务器仅部署管理员配置，不接受邮件内容或普通订阅表单指定新的内网连接目标；保留 TLS 验证。
-- 飞书端点采用预期官方域名，不把邮件中的 URL 直接当 Webhook 目标，不跟随未验证重定向。
-- App Secret、邮箱授权码、会话 Secret 不进入 API 响应、错误栈、版本库、截图与测试报告；只显示是否配置。
-- 邮件 HTML 清理和 CSP 同时实施，默认移除外部资源与跟踪像素；禁用脚本、危险 URL、表单和自动下载。
-- 页面无鉴权时不得外网开放；公网部署需 HTTPS。仅在可信局域网运行也不能省略私人内容鉴权。
-- 首版不调用模型，不隐式向模型服务传输邮件。后续启用摘要必须再次说明正文将发送给谁。
+```bash
+npm run backup -- backups/manual.sqlite
+# 停止Web与Worker后执行
+npm run restore -- backups/manual.sqlite --confirm-stopped
+```
 
-## 11. 部署决策
+恢复后旧待发记录需要核查，不自动重放；摘要和AIHOT自动开关停用，微信需重新绑定，密码会话清除，用量账本保留。确认配置后再启用自动处理。
 
-推荐同一台可访问所需服务的持久化主机，Web 与 Worker 通过 Docker Compose 运行并共享 SQLite 数据卷。数据卷、Secret、备份应分开管理。
-
-不把 Vercel 作为首版后台常驻调度器；其 Hobby Cron 当前有每日频率和时间精度限制。公开演示可独立使用合成数据，但不得连到私人邮箱实例。[Vercel 官方说明](https://vercel.com/docs/cron-jobs/usage-and-pricing)
-
-服务器地点、费用和网络尚未验证；不承诺某个地区或平台一定能访问 YouTube，也不把本机代理地址写进云配置。
-
-## 12. 关键决策记录
-
-| 决策 | 结论 | 重新评估条件 |
-| --- | --- | --- |
-| ADR-01 | 独立订阅器，Sift 后置 | 用户重新明确希望以单内容摘要为中心 |
-| ADR-02 | 单用户、自托管、单节点 | 实际出现多人/多实例需求，再单独设计 |
-| ADR-03 | v0.1 无 AI、无字幕下载 | v0.3 获得明确预算与内容外发授权 |
-| ADR-04 | Feed 轮询优先 | 延迟确有影响且能维护回调、续订与补查 |
-| ADR-05 | 专用邮箱 IMAP 只读 | 实际邮箱不支持所需授权，再评估 OAuth 或邮件转入 |
-| ADR-06 | 用户2026-10-16确认独立应用机器人单向私聊 | 需要群推送、多人或会话交互时另行评估权限 |
-| ADR-07 | 允许 unknown，不承诺 exactly-once | 平台提供可验证幂等键或投递回查时再增强 |
-
-## 13. 当前实现与运维
-
-- `server/store.ts`：SQLite schema v4、事务、队列与租约、重试、配额及清理。`server/engine.ts`：采集、游标、规则版本与投递编排。`server/adapters.ts`：YouTube Feed、只读 IMAP 与飞书；公共 Feed 使用 `server/rss.ts`；可选字幕使用 `server/captions.ts`。
-- `server/main.ts` 与 `server/worker.ts` 可分进程运行；开发演示通过 `EMBED_WORKER=1` 合并。独立 Worker 的全局租约确保同数据目录同一时刻只有一个扫描循环，单循环最多处理2个读取任务、5次顺序发送。
-- `web/` 是 Vue 管理工作台；不使用 `v-html` 渲染私人正文，不从网页保存或读回 Secret。
-- 账户标识由 IMAP host/user/folder 计算指纹。修改账户或文件夹需新数据目录，避免复用旧 UID；改授权码不改变身份。暂停/恢复邮件规则会取消旧 mailbox 租约，防止旧扫描覆盖补抓游标。
-- schema 高于当前程序时拒绝启动。`server/migrations.ts` 在 SQLite 写锁内检查版本并原子升级 v1→v2；已有投递默认即时、旧设置补默认日报时间，不丢历史。旧版表结构迁移与新备份恢复有独立回归测试。升级前停止所有进程并备份，禁止不同版本共用同一数据卷运行。
-
-### 本地与生产
-
-真实凭证通过 `npm run setup` 创建的 `.env` 提供，默认关闭 IMAP 与飞书；`npm start` 服务8787，另终端 `npm run worker`。开发真实来源时 Origin 改为 localhost:5183 并启用嵌入 Worker。`npm run demo` 强制隔离 `data-demo/`、关闭真实来源，不受正式 `.env` 中 DATA_DIR/凭证开关影响。
-
-内置会话有8小时有效期，HttpOnly/SameSite=Strict，写接口检查 Origin 与 CSRF。公网部署使用 HTTPS 和 `COOKIE_SECURE=1`，反向代理须保留请求来源安全边界。不要直接对公网开放演示密码、Vite 开发端口或8787。
-
-Docker Compose 已提供双入口与共享卷配置，但本轮未运行容器验收。部署前先在目标机器验证 Docker 构建与三个来源的网络可达性；不承诺国内/海外某个区域必然可达。
-
-### 备份恢复
-
-先完成 `npm run build`。本地 `npm run backup -- backups/manual.sqlite` 使用 SQLite 在线备份 API，包含 WAL 中已提交事务，备份文件权限600。恢复前停止两个进程，再 `npm run restore -- backups/manual.sqlite --confirm-stopped`。恢复使用维护锁、完整性检查和 schema 检查；原数据另外做一致性备份，待发/发送中/待重试/未知记录统一转 `unknown / RESTORED_NEEDS_REVIEW`。
-
-Docker 卷内备份示例：`docker compose exec worker node dist/scripts/backup.js /app/data/manual.sqlite`。停止服务后可用 `docker compose run --rm --no-deps worker node dist/scripts/restore.js /app/data/manual.sqlite --confirm-stopped` 在同一卷恢复；确认无残留进程后再启动。以上容器命令尚待目标环境实测。
-
-备份含邮件正文，离机保存应加密；删除当前记录不会删除旧备份或完成取证级磁盘擦除。备份保留期由部署者负责，不能上传公开仓库。
-
-## 14. DeepSeek 摘要与预算
-
-FR-22将旧本地模块改为`server/deepseek.ts`直连适配器，`server/summary.ts`保留状态/授权/预算服务。无需其他项目源码、动态导入或额外服务。未配置Key时不阻断订阅。配置前缀迁移为DEEPSEEK_，旧DIR删除；原账本、来源、schema v4和微信绑定保留，适配器变化要求重新确认预算，不自动扩额。
-
-调用缓存至少包含内容哈希、摘要模式、模型及提示版本。所有分块、修复、合并、失败重试计入同一可见预算；只有标题/简介时不能声称总结完整视频。保留明确的内容来源、引文位置和模型错误，摘要失败降级为原始条目。
-
-模型仅使用固定DeepSeek接口；FR-19额外支持公开字幕，仍不处理音视频或画面理解。
-
-### v0.3 实现与恢复
-
-- schema v3新增来源摘要授权、summaries与model_calls；当前schema v4不变。缓存包含输入hash、范围、模型、完整提示与解析策略版本、价格、活动目标指纹、条目和来源代次。目标/提示改变使旧授权失效，不自动外发旧缓存。
-- 直接调用DeepSeek JSON模式。仅在finish_reason=stop后尝试解析；语法错误使用锁定jsonrepair本地修复，兼容已观察到的overview.keyPoints嵌套但拒绝根/嵌套冲突，不改写任何字段内容。随后仍执行字段长度、原文逐字引文及时间段校验。修复标记展示在结果中；失败最多一次额外模型修复，反馈固定错误类别与受限上一版输出，不记录私人原文日志。
-- 模型出口仅 `https://api.deepseek.com/chat/completions`；禁止重定向，输入请求限100KB，响应限256KB，单请求25秒，任务60秒/最多2次调用。HTTP调用前以BEGIN IMMEDIATE预占，失败不退；usage单独记录，非成功任务也保留账本。费用预留为请求UTF-8字节数×输入单价 + 最大输出token×输出单价，使用微元整数，非正式账单或普适token上界保证。实际估算超预留时停用模型，不继续消耗。
-- 累计上限不可被并发或修复绕过；配置改变不删除账本。账本无正文/Key，保留累计额度依据，不随90天内容清理删除。备份恢复无法推断备份后的消费，恢复默认禁用模型、撤销来源授权并清理摘要内容和补充快照；需核对服务商账单后重新明确预算。
-- Worker先执行原抓取和原消息，再处理最多一个摘要任务；摘要失败不改变原投递。摘要可能使下一轮调度延后，最长受任务60秒上限约束，不承诺原提醒零额外延迟。AI补充为单独kind=summary条目、固定snapshot、即时投递，隐藏于原始更新列表；重试只重发快照。保留期、source取消、目标指纹和每日额度仍适用。
-- 摘要任务原子领取、120秒租约与token围栏。租约过期改unknown，禁止自动重做；明确确认后可重试，保留前次调用账本。授权变更和原文变化在每次请求前/提交结果时校验，执行中轮询取消，已发出数据无法撤回。完成时清空请求快照，保留允许展示的结果；到期清理父条目、结果及补充消息。
-- 输出一句话与最多3条带引文要点；详情有要点/脉络/时间线视图，不编造统计值。引文必须在对应原文段落，不把字面检查等同语义支持或真实准确率。数据内指令不是授权，摘要无业务工具。
-
-上述60秒/2次/120秒租约仍用于feed/邮件/RSS；字幕增强的覆盖规则见下文。
-
-### 字幕增强与迁移（FR-19）
-
-- schema v4只新增`sources.summary_content`（默认feed）和`summaries.material`（默认空）。所有旧版库事务升级，原通知/日报不改；摘要披露版本升级要求重新确认预算与来源。回滚恢复旧备份，旧程序不可打开v4。v1-v4备份恢复清空material/结果/补充快照，停用摘要并保留调用账本。
-- 不创建第二套队列。summaries.scope区分简介/字幕；原item.key的固定videoID是唯一请求入口，不打开Feed里任意URL。material存字幕的语言、类型、时长、规范化时间文本和hash，不保存签名URL。缓存限于有效任务快照，不是永久字幕仓库，不自动重新读取远端字幕；模型失败手动重试保留material与账本。
-- `scripts/youtube-captions.py`通过yt-dlp Python API提取元数据（download=False），仅读取选中JSON3字幕URL的前2MB+1字节；不保存字幕或媒体文件。禁Cookie/netrc/插件、远程组件获取和隐式代理，白名单环境/新HOME。Node以无shell进程组启动、stdout限制2MB、45秒终止/撤销，并回收临时目录；不打印yt-dlp原始错误/签名URL。Python路径和无账号HTTP(S)代理仅来自部署者配置，前端无法写入。
-- 标准化后最多48000码元、4小时/20000条字幕，时间按秒保留；不把时间戳接近片尾当完整覆盖。按平台字段记录manual/automatic，自动轨道优先原始语言；只移除相邻完全相同滚动前缀。缺少轨道和空正文分别失败，无法区分尚未生成与永远没有字幕；用户可稍后手动重试。
-- 内置按完整时间段分组的分块/合并，不拆引文段；单段过长拒绝，不静默截断。合并只能选取分块已有的逐字证据与定位。字幕任务总时限240秒（包括字幕获取）、最多12次HTTP请求/修复，逐次25秒/100KB请求/256KB响应，统一累计预算；租约300秒，过期unknown，不自动重做。请求前与提交时校验授权、内容、目标和token；下一轮Worker可能延后最多4分钟。
-- 切换scope、源暂停/删除、元数据变化、授权/目标/组件版本改变使结果失效；material和补充快照同原文生命周期。最终引文必须对应原时间单元，链接由服务端构造videoID+t秒，不使用模型提供的URL。摘要失败不发布部分块、不会自动改用简介或调用ASR。
-- 组件为可信本地依赖，进程环境隔离不是OS沙箱；未对yt-dlp全部内部请求实现RSS同级DNS固定，也没有硬限制元数据内存/总流量。公开视频ID入口、超时与字幕大小限制降低风险，公网部署仍须非特权容器、网络出口和内存/磁盘限额。默认Docker不装Python；可选构建参数安装锁定版本，未实际构建验收。
-
-## 15. v0.2 实现细节
-
-### 日报路由与冻结
-
-`sources.delivery_mode` 为 immediate/digest。内容首次排队以当前有效匹配来源决定路由，多规则优先即时；后续模式切换不修改既有投递。即时进入 pending，日报进入 digest_wait。预览快照在首次排队保存；后续标题/正文编辑更新条目，但不暗改待投递快照。
-
-`server/digest.ts` 使用 Luxon 计算配置时区最近到期的本地窗口，按投递创建/发现时间而非不可靠发布时间选取未分配成员。空窗口也登记 slot，防止同一窗口重复冻结。停机恢复只冻结最近到期窗口，不为每个错过日期补发空消息；未分配且未过期的积压仍可纳入。
-
-冻结事务创建 digest_batches、最多500个成员指针与分片；每片最多10条、内容预算3300字符再加短标题，小于既有4000字符发送上限，不截断条目链接。超量留待下一窗口，异常单条过长转明确失败。日报分片以内部 digest 条目承载，复用原 deliveries/attempts 的配额、租约、unknown 和重试，不另造发送队列。digest 条目不计入内容列表/收录统计。原始成员置 batched 并指向分片，API 透出分片的有效投递状态和尝试记录。
-
-暂停来源会取消包含已撤销成员的未发分片并清理快照，不原地改写或自动重组，因此其他成员也可能被取消；前端暂停和删除确认明确说明。任一邮件成员到期时连同分片正文/快照清理；部分成功、unknown 和 cancelled 分别展示。目标指纹变化不自动迁移积压；显式重发按分片确认、保留历史且仍受每日额度限制。
-
-### RSS 网络边界
-
-`server/rss.ts` 使用成熟 rss-parser 解析 RSS/Atom、Node HTTPS/TLS 建立连接、ipaddr.js 判定地址范围。仅接受公开 HTTPS Feed，无用户信息、查询参数、自定义端口和私有 Token。条目可使用带查询参数的 HTTPS 原文链接，但不会跟随抓取。相同 Feed 用 GUID/ID/有效链接生成稳定哈希，不跨不同 Feed 自动合并文章。
-
-DNS lookup 的全部 A/AAAA 地址均须为公网 unicast；IPv4-mapped IPv6 和特殊地址同样拒绝。将这批已验证地址直接交给 socket，而非先检查再二次解析，避免 DNS rebinding；TLS 仍验证原域名证书。每跳重定向重新验证 URL 和 DNS，最多3次。每次请求15秒超时、16KB头部和2MB正文上限，禁用压缩，只支持 UTF-8/ASCII，拒绝 DTD/实体声明，不加载图片或附件，不自动读取代理配置。
-
-安全依据参考 [OWASP SSRF 防护](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)，时区与夏令时行为使用 [Luxon](https://moment.github.io/luxon/api-docs/index.html)，不是手写日期偏移或 IP 正则。
-
-### 配置迁移
-
-`server/portable.ts` 采用版本化白名单 JSON，仅含来源定义/投递方式；邮箱账户引用为 default。导出 RSS URL 需单独确认，默认省略。导入先校验全文件与数量、生成预览哈希；提交重新校验并比较哈希。哈希只绑定文件内容，不是权限凭证；写操作仍依赖会话、Origin 和 CSRF。
-
-应用导入在单事务内跳过现存/文件内重复项，全部新增来源暂停且关闭通知，没有网络请求；拒绝凭证、游标、enabled 等字段。文件上限30KB、最多25项，且满足10频道、10 RSS、5邮件规则上限。导出文件仍可能含私人发件地址，不能自动上传 Git。恢复支持 v1/v2 备份，先升级复制出的临时库，待发日报成员和分片转 unknown，禁止陈旧快照盲目回放。
-
-## 16. YouTube @频道解析（FR-20）
-
-`server/youtube.ts`分开处理纯输入标准化、文档元信息解析和网络传输。添加API异步将handle解析为UC ID，再执行原有normalizeSource、容量和唯一键校验；保存默认暂停，不在数据库事务中等待网络。Store/导入导出仍只处理标准ID，schema不变。
-
-只接受YouTube HTTPS频道地址、@用户名或UC ID，剥离白名单频道分页与分享参数后重建固定`www.youtube.com/@…`地址；拒绝其他主机、凭证、端口、片段、视频/跳转路径。htmlparser2流式读取文档级canonical/og:url，多个合法候选必须一致；不执行JS，不搜索任意channelId/identifier，避免推荐内容误识别。YouTube实测把元信息放在body，不能只读head；响应限4MB、15秒、拒绝自动重定向，失败不保存。
-
-每个Engine持有专用Undici Agent/ProxyAgent；锁定与Node24内置fetch兼容的Undici7，显式dispatcher不修改全局出口、不继承系统代理。`YOUTUBE_PROXY_URL`同时用于解析与YouTube RSS，字幕、通用RSS、邮件、模型与飞书出口不变；关闭Engine时销毁连接池。代理是部署者信任的基础设施，不是任意用户可写入的代理服务。
-
-演示适配器仅把`@feedrelay-demo`映射到合成UC ID，真实handle返回明确提示；基础无Key流程不引入YouTube API Key或Python依赖。页面结构和网络仍可能变化；直填UC ID只跳过地址解析，不保证RSS可达，也不保证未来handle改名后继续追踪同一用户名。
+默认邮件正文保留7天、其他内容保留30天，去重和审计等最小记录按保留策略清理。页面删除不等于磁盘安全擦除，旧备份需自行管理。

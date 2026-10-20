@@ -127,6 +127,7 @@ const authenticated = ref(false),
   csrf = ref(''),
   password = ref('');
 const remember = ref(false), mustChangePassword = ref(false);
+const authMode = ref<'local' | 'password'>('password');
 const aihot = ref({ enabled: false, startDate: '', nextCheck: 0, lastDate: '', error: '' });
 const routeItem = () => location.hash.match(/^#items\/([a-f0-9-]{36})$/i)?.[1] || '';
 const detailId = ref(routeItem());
@@ -264,6 +265,8 @@ const errors: Record<string, string> = {
   INVALID_NEW_PASSWORD: '新密码须为8–16个字符，不能全为空格。',
   PASSWORD_UNCHANGED: '新密码不能与当前密码相同。',
   PASSWORD_CHANGE_REQUIRED: '请先修改默认管理密码。',
+  LOCAL_ACCESS_ONLY: '本机模式仅允许本机直接访问。',
+  LOCAL_AUTH_NOT_REQUIRED: '本机模式无需登录。',
   UNAUTHORIZED: '会话已过期，请重新登录。',
   INVALID_ORIGIN: '访问地址与 APP_ORIGIN 不一致，请检查本地配置。',
   INVALID_CSRF: '会话已更新，请刷新页面。',
@@ -734,8 +737,9 @@ onMounted(async () => {
   document.addEventListener('keydown', keyboard);
   window.addEventListener('hashchange', routeChanged);
   try {
-    const session = await api<{ authenticated: boolean; demo: boolean; csrf: string; mustChangePassword: boolean }>('/session');
+    const session = await api<{ authenticated: boolean; demo: boolean; csrf: string; mustChangePassword: boolean; authMode: 'local' | 'password' }>('/session');
     csrf.value = session.csrf;
+    authMode.value = session.authMode;
     demo.value = session.demo;
     authenticated.value = session.authenticated;
     mustChangePassword.value = session.mustChangePassword;
@@ -785,7 +789,7 @@ onUnmounted(() => {
   </main>
   <div v-else class="workspace">
     <aside class="sidebar">
-      <button class="quiet mobile-logout" aria-label="退出登录" title="退出登录" :disabled="busy" @click="logout"><LogOut :size="18" /></button>
+      <button v-if="authMode === 'password'" class="quiet mobile-logout" aria-label="退出登录" title="退出登录" :disabled="busy" @click="logout"><LogOut :size="18" /></button>
       <a class="brand" href="#" @click.prevent="switchView('updates')"
         ><Rss :size="26" /><strong>FeedRelay</strong></a
       >
@@ -811,7 +815,7 @@ onUnmounted(() => {
           ></i
           >后台任务</span
         ><small>{{ time(overview?.stats.heartbeat) }}</small
-        ><button class="quiet" @click="logout" :disabled="busy">
+        ><button v-if="authMode === 'password'" class="quiet" @click="logout" :disabled="busy">
           <LogOut :size="16" />退出登录
         </button>
       </div>
@@ -1188,7 +1192,7 @@ onUnmounted(() => {
         </section>
       </template>
       <template v-if="view === 'settings'">
-        <section class="settings-band">
+        <section v-if="authMode === 'password'" class="settings-band">
           <h2>管理密码</h2>
           <PasswordSettings :busy="busy" @save="changePassword" />
         </section>
