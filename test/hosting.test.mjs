@@ -80,19 +80,22 @@ test('HOST-04: logs are bounded and backups retain only owned daily snapshots', 
   assert.ok(statSync(logfile).size <= 32);
   assert.deepEqual(readdirSync(join(root, 'logs')).sort(), ['service.log', 'service.log.1', 'service.log.2']);
   const db = new DatabaseSync(join(root, 'feedrelay.sqlite'));
-  db.exec('PRAGMA journal_mode=WAL; CREATE TABLE example(value TEXT); INSERT INTO example VALUES (\'synthetic\');');
-  t.after(() => db.close());
-  const backups = join(root, 'backups');
-  assert.equal(await dailyBackup(root, backups, 7, new Date('2026-10-01T10:00:00Z')), true);
-  assert.equal(await dailyBackup(root, backups, 7, new Date('2026-10-01T11:00:00Z')), false);
-  writeFileSync(join(backups, 'manual.sqlite'), 'keep');
-  writeFileSync(join(backups, 'auto-invalid.sqlite'), 'keep');
-  await dailyBackup(root, backups, 7, new Date('2026-10-09T10:00:00Z'));
-  assert.equal(existsSync(join(backups, 'auto-2026-10-01.sqlite')), false);
-  assert.equal(existsSync(join(backups, 'manual.sqlite')), true);
-  const saved = new DatabaseSync(join(backups, 'auto-2026-10-09.sqlite'), { readOnly: true });
-  assert.equal(saved.prepare('SELECT value FROM example').get().value, 'synthetic');
-  saved.close();
+  // Release SQLite handles before temp() removes the directory; Windows locks open files.
+  try {
+    db.exec('PRAGMA journal_mode=WAL; CREATE TABLE example(value TEXT); INSERT INTO example VALUES (\'synthetic\');');
+    const backups = join(root, 'backups');
+    assert.equal(await dailyBackup(root, backups, 7, new Date('2026-10-01T10:00:00Z')), true);
+    assert.equal(await dailyBackup(root, backups, 7, new Date('2026-10-01T11:00:00Z')), false);
+    writeFileSync(join(backups, 'manual.sqlite'), 'keep');
+    writeFileSync(join(backups, 'auto-invalid.sqlite'), 'keep');
+    await dailyBackup(root, backups, 7, new Date('2026-10-09T10:00:00Z'));
+    assert.equal(existsSync(join(backups, 'auto-2026-10-01.sqlite')), false);
+    assert.equal(existsSync(join(backups, 'manual.sqlite')), true);
+    const saved = new DatabaseSync(join(backups, 'auto-2026-10-09.sqlite'), { readOnly: true });
+    try {
+      assert.equal(saved.prepare('SELECT value FROM example').get().value, 'synthetic');
+    } finally { saved.close(); }
+  } finally { db.close(); }
 });
 
 test('HOST-05: real built server runs from a spaced path and gracefully stops through IPC', { timeout: 30_000 }, async t => {
