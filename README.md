@@ -82,4 +82,4 @@ npm run test:e2e
 
 本机模式要求 `AUTH_MODE=local`、`HOST=127.0.0.1`，不用于反向代理、端口转发或远程访问。需要保留密码访问时使用 `AUTH_MODE=password`，运行构建后的 `npm run reset-password` 设置密码；本机模式下不会显示密码和退出入口。
 
-[自托管指南](docs/SELF_HOSTING.md) · [功能说明](docs/PRODUCT.md) · [技术与运维](docs/TECHNICAL_DESIGN.md) · [开发计划](docs/ROADMAP.md) · [验证与排查](docs/QUALITY_AND_RISKS.md)
+[自托管指南](docs/SELF_HOSTING.md) · [功能说明](docs/PRODUCT.md) · [技术与运维](docs/TECHNICAL_DESIGN.md) · [官网预览与发布](docs/WEBSITE.md) · [开发计划](docs/ROADMAP.md) · [验证与排查](docs/QUALITY_AND_RISKS.md)
