@@ -33,7 +33,7 @@ export function startLoop(engine: Engine) {
     timer: ReturnType<typeof setTimeout>;
   const tick = async () => {
     try {
-      await engine.cycle();
+      await engine.cycle(true);
     } catch {
       console.error(JSON.stringify({ event: 'worker_error', code: 'WORKER_CYCLE_FAILED' }));
     } finally {

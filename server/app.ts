@@ -21,6 +21,7 @@ import { listDigests } from './digest.js';
 import { latestDelivery, pushStateSql } from './push-state.js';
 import { exportSources, previewImport, applyImport } from './portable.js';
 import { AdminAuth } from './auth.js';
+import { diagnostics } from './diagnostics.js';
 
 const bool = (v: unknown) => {
   if (typeof v !== 'boolean') throw new AppError('INVALID_BOOLEAN');
@@ -135,6 +136,9 @@ export function createApp(store: Store, config: Config, engine: Engine) {
       mustChangePassword: config.authMode === 'password' && !!ctx.session.mustChangePassword,
     };
   });
+  router.get('/api/diagnostics', (ctx) => {
+    ctx.body = diagnostics(engine);
+  });
   router.post('/api/login', (ctx) => {
     const { password, remember = false } = ctx.request.body as { password?: unknown; remember?: unknown };
     bool(remember);
@@ -159,6 +163,7 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     ctx.body = {
       stats: store.stats(),
       settings: store.settings(),
+      diagnostics: diagnostics(engine),
       demo: config.demo,
       connections: {
         imap: config.demo || config.imap.enabled,

@@ -21,6 +21,7 @@ server.on('error', async () => {
   await stopWorker();
   release();
   store.close();
+  if (process.connected) process.disconnect();
   process.exitCode = 1;
 });
 let closing = false;
@@ -32,7 +33,9 @@ async function shutdown() {
   server.close(() => {
     release();
     store.close();
+    if (process.connected) process.disconnect();
   });
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+process.on('message', (message) => { if (message === 'feedrelay:stop') void shutdown(); });

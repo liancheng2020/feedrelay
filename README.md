@@ -1,6 +1,6 @@
 # FeedRelay
 
-自动采集 YouTube、邮件和 RSS，使用 DeepSeek 提取要点，再推送到微信或飞书。适合个人在自己的电脑上长期运行。
+自动采集 YouTube、邮件和 RSS，使用 DeepSeek 提取要点，再推送到微信或飞书。每个人都可以在自己的电脑上独立部署。
 
 本机打开即用，无需登录。每个部署使用自己的数据和凭证，目前不支持多人共用。
 
@@ -31,6 +31,17 @@ npm start
 打开 [localhost:8787](http://localhost:8787)。后台任务随服务运行，浏览器可以关闭；电脑休眠或服务退出会暂停处理。
 
 `setup` 创建本机 `.env`，不会覆盖已有文件。配置参考 [.env.example](.env.example)，修改后重启服务。已有配置若设置了 `EMBED_WORKER=0`，需要另外运行 `npm run worker`。
+
+macOS、Windows、Linux 的安装、视频组件和长期托管见[自托管指南](docs/SELF_HOSTING.md)。首次配置先确认能收到一条真实消息，再启用长期托管。
+
+```text
+npm run doctor
+# 停止手动服务后，安装当前用户托管并立即启动
+npm run service -- install
+npm run service -- status
+```
+
+托管默认登录系统后启动，异常退出自动重启；休眠和关机仍会暂停。Windows/Linux 已提供托管入口，系统自启和视频组件需在目标机单独验证。
 
 ## 接入来源和推送
 
@@ -71,4 +82,4 @@ npm run test:e2e
 
 本机模式要求 `AUTH_MODE=local`、`HOST=127.0.0.1`，不用于反向代理、端口转发或远程访问。需要保留密码访问时使用 `AUTH_MODE=password`，运行构建后的 `npm run reset-password` 设置密码；本机模式下不会显示密码和退出入口。
 
-[功能说明](docs/PRODUCT.md) · [技术与运维](docs/TECHNICAL_DESIGN.md) · [开发计划](docs/ROADMAP.md) · [验证与排查](docs/QUALITY_AND_RISKS.md)
+[自托管指南](docs/SELF_HOSTING.md) · [功能说明](docs/PRODUCT.md) · [技术与运维](docs/TECHNICAL_DESIGN.md) · [开发计划](docs/ROADMAP.md) · [验证与排查](docs/QUALITY_AND_RISKS.md)

@@ -56,6 +56,7 @@ const scope = (kind: string) =>
       : '已采集邮件正文（不含附件）';
 
 export class SummaryService {
+  executionGuard?: () => void;
   private controller?: AbortController;
   cancel() {
     this.controller?.abort();
@@ -563,6 +564,7 @@ export class SummaryService {
     });
     if (!row) return;
     const active = () => {
+      this.executionGuard?.();
       const current = this.store.get<SummaryRow>('SELECT * FROM summaries WHERE id=?', row.id);
       if (
         !current ||

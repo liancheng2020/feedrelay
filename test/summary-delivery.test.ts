@@ -4,6 +4,8 @@ import { fixture, incoming } from './helpers.js';
 import { AppError } from '../server/config.js';
 import type { Delivery } from '../server/store.js';
 import { freezeDigest } from '../server/digest.js';
+import { Engine } from '../server/engine.js';
+import { diagnostics } from '../server/diagnostics.js';
 
 function setup(t: Parameters<typeof fixture>[0], mode = 'auto', digest = false) {
   const sent: string[] = [];
@@ -22,6 +24,62 @@ function setup(t: Parameters<typeof fixture>[0], mode = 'auto', digest = false) 
   const delivery = () => f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
   return { ...f, source, service, item, delivery, sent };
 }
+
+test('HOST-08: a long summary keeps its lease while other sources and ready messages continue', async t => {
+  const f = setup(t);
+  let release!: () => void, calls = 0;
+  const original = f.service.captions!.fetch;
+  f.service.captions!.fetch = async (...args) => {
+    calls++;
+    await new Promise<void>(resolve => { release = resolve; });
+    return original(...args);
+  };
+  t.after(() => release?.());
+  await f.engine.cycle(true);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(diagnostics(f.engine).worker.summarizing, true);
+  assert.equal(f.delivery().error, 'SUMMARY_REQUIRED');
+  const other = f.store.createSource({ type: 'youtube', name: 'Other', channel: 'UC' + 'b'.repeat(22) });
+  f.store.toggle(other.id, true, true);
+  f.engine.adapters.feed = async () => ({ unchanged: false, items: [] });
+  f.store.put({ ...incoming('ready-message', f.now()), title: 'Ready message' }, [f.store.source(other.id)], true, 'demo');
+  const contender = new Engine(f.store, f.config, { feed: async () => { throw new Error('Second worker must not run'); } });
+  await contender.cycle(true);
+  await contender.stop();
+  await f.engine.cycle(true);
+  assert.equal(f.store.source(other.id).initialized, 1);
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0], /Ready message/);
+  assert.equal(calls, 1);
+  assert.equal(f.delivery().status, 'pending');
+  release();
+  await f.engine.cycle();
+  await f.engine.cycle();
+  assert.equal(f.delivery().status, 'sent');
+  assert.equal(f.sent.length, 2);
+  assert.equal(calls, 1);
+});
+
+test('HOST-11: losing the worker lease fences an in-flight summary before any model call', async t => {
+  const f = setup(t);
+  let release!: () => void;
+  const original = f.service.captions!.fetch;
+  f.service.captions!.fetch = async (...args) => {
+    await new Promise<void>(resolve => { release = resolve; });
+    return original(...args);
+  };
+  t.after(() => release?.());
+  await f.engine.cycle(true);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  f.store.run("UPDATE locks SET token='other-worker',until=? WHERE name='worker'", f.now() + 120_000);
+  release();
+  await f.engine.stop();
+  assert.notEqual(f.service.list(f.item.id)[0].status, 'succeeded');
+  assert.equal(f.service.describe().calls, 0);
+  assert.equal(f.delivery().snapshot, '');
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.store.get("SELECT token FROM locks WHERE name='worker'")!.token, 'other-worker');
+});
 
 test('SP-01: collection waits for complete video summary, then sends exactly one numbered message', async (t) => {
   const f = setup(t);

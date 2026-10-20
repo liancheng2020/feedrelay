@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { isolatedPythonEnvironment, terminateProcessTree } from './process-platform.js';
 import { AppError, type Config } from './config.js';
 import { contentHash, normalizeQuote, type Brief } from './deepseek.js';
 
@@ -141,7 +142,7 @@ export function captionEvidence(result: Brief, caption: Caption) {
   return result;
 }
 
-// No shell, inherited secrets, cookies or disk subtitle files. The process group includes EJS children.
+// No shell, inherited secrets, cookies or disk subtitle files. Cancellation includes EJS children.
 export async function captionProcess(
   python: string,
   helper: string,
@@ -156,26 +157,18 @@ export async function captionProcess(
     return await new Promise<unknown>((resolveResult, reject) => {
       const child = spawn(python, ['-I', helper], {
         cwd: home,
-        detached: true,
+        detached: process.platform !== 'win32',
+        windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
-          HOME: home,
-          XDG_CONFIG_HOME: home,
-          TMPDIR: home,
-          LANG: 'en_US.UTF-8',
-          HF_HUB_OFFLINE: '1',
-          HF_HUB_DISABLE_TELEMETRY: '1',
-        },
+        env: isolatedPythonEnvironment(home, python),
       });
       let out = '',
         size = 0,
         failure = '';
       const stop = (code: string) => {
+        if (failure) return;
         failure ||= code;
-        try {
-          process.kill(-child.pid!, 'SIGKILL');
-        } catch {}
+        terminateProcessTree(child);
       };
       const abort = () => stop('YOUTUBE_CANCELLED');
       signal.addEventListener('abort', abort, { once: true });

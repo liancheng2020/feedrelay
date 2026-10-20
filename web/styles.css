@@ -1157,6 +1157,37 @@ label select {
   gap: 4px;
   align-items: flex-start;
 }
+.runtime-checks {
+  margin: 16px 0 0;
+}
+.runtime-checks > div {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px 16px;
+  padding: 10px 0;
+}
+.runtime-checks dt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.runtime-checks dd {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.runtime-checks .check-warning {
+  color: #9a6b20;
+}
+@media (max-width: 600px) {
+  .runtime-checks > div {
+    grid-template-columns: 1fr;
+  }
+  .runtime-checks dd {
+    padding-left: 24px;
+  }
+}
 .settings-band {
   border-top: 1px solid #dce5de;
   padding: 25px 0;

@@ -35,6 +35,26 @@ export class Engine {
   private stopped = false;
   private feedAbort = new AbortController();
   private activeToken = '';
+  private summaryTask?: Promise<void>;
+  private heartbeat?: ReturnType<typeof setInterval>;
+  private phase = 'idle';
+  private stopTask?: Promise<void>;
+  private pulse() {
+    this.store.run(
+      'INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+      'heartbeat', String(this.store.now()),
+    );
+    this.store.run(
+      'INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+      'worker-state', JSON.stringify({ owner: this.owner, phase: this.phase, summarizing: !!this.summaryTask }),
+    );
+  }
+  private releaseIdle() {
+    if (this.busy || this.summaryTask) return;
+    clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
+    this.store.releaseWorker(this.owner);
+  }
   private youtubeClient: ReturnType<typeof youtubeTransport>;
   readonly weixin: Weixin;
   adapters: Adapters;
@@ -98,15 +118,18 @@ export class Engine {
   syncDestination() {
     this.summaries.destination = this.destination;
   }
-  async cycle() {
+  async cycle(backgroundSummaries = false) {
     if (this.busy || this.stopped || !this.store.leaseWorker(this.owner)) return;
     this.busy = true;
     this.syncDestination();
-    const heartbeat = setInterval(() => {
+    this.heartbeat ??= setInterval(() => {
       if (!this.store.leaseWorker(this.owner)) {
         this.stopped = true;
+        this.feedAbort.abort();
+        this.summaries.cancel();
         return;
       }
+      this.pulse();
       this.store.run(
         `UPDATE jobs SET lease=? WHERE status='running' AND token=?`,
         this.store.now() + 120_000,
@@ -114,22 +137,21 @@ export class Engine {
       );
     }, 30_000);
     try {
-      this.store.run(
-        'INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-        'heartbeat',
-        String(this.store.now()),
-      );
+      this.phase = 'collecting';
+      this.pulse();
       this.store.cleanup();
       if (!this.stopped && this.pushReady) await this.aihot.cycle(this.destination, this.feedAbort.signal);
       this.store.schedule();
       // One process owns the loop; two bounded reads avoid an unbounded catch-up burst.
       for (let n = 0; n < 2 && !this.stopped; n++) {
-        if (this.store.get("SELECT 1 FROM summaries WHERE status='queued' AND origin='manual' LIMIT 1")) break;
+        if (!this.summaryTask && this.store.get("SELECT 1 FROM summaries WHERE status='queued' AND origin='manual' LIMIT 1")) break;
         const job = this.store.claimJob();
         if (job) await this.execute(job);
       }
       this.summaries.reconcile();
       if (!this.stopped) freezeDigest(this.store, this.destination);
+      this.phase = 'sending';
+      this.pulse();
       if (this.pushReady && !this.stopped)
         for (let n = 0; n < 5 && !this.stopped; n++) {
           const d = this.store.claimDelivery(this.destination);
@@ -142,20 +164,49 @@ export class Engine {
         }
       if (!this.stopped) {
         this.summaries.schedule();
-        await this.summaries.cycle(this.destination);
+        if (!this.summaryTask) {
+          this.summaries.executionGuard = () => {
+            if (this.stopped || !this.store.get("SELECT 1 FROM locks WHERE name='worker' AND token=? AND until>?", this.owner, this.store.now()))
+              throw new AppError('SUMMARY_WORKER_LEASE_LOST');
+          };
+          // Keep the worker lease while a long summary runs, without blocking collection or delivery.
+          this.summaryTask = this.summaries.cycle(this.destination)
+            .catch(() => {
+              this.store.event('worker_error', 'summary', 'SUMMARY_CYCLE_FAILED');
+            })
+            .finally(() => {
+              this.summaries.executionGuard = undefined;
+              this.summaryTask = undefined;
+              this.pulse();
+              this.releaseIdle();
+            });
+        }
+        if (!backgroundSummaries) await this.summaryTask;
       }
     } finally {
-      clearInterval(heartbeat);
-      this.store.releaseWorker(this.owner);
+      this.phase = 'idle';
       this.busy = false;
+      this.pulse();
+      this.releaseIdle();
     }
   }
-  async stop() {
+  stop() {
+    return this.stopTask ??= this.shutdown();
+  }
+  private async shutdown() {
     this.stopped = true;
     this.feedAbort.abort();
     this.summaries.cancel();
     await this.weixin.stop();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 25));
+    await this.summaryTask;
+    if (this.store.db.isOpen) {
+      this.releaseIdle();
+      this.phase = 'stopped';
+      // A non-owner API Engine must not overwrite the standalone worker's heartbeat.
+      const state = this.store.get<{ value: string }>("SELECT value FROM meta WHERE key='worker-state'")?.value;
+      if (state && JSON.parse(state).owner === this.owner) this.pulse();
+    }
     await this.youtubeClient.close();
   }
   async execute(job: Job) {

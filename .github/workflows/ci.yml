@@ -3,6 +3,23 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  hosting:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node --test test/hosting.test.mjs
+      - run: node --import tsx --test test/process-platform.test.ts test/diagnostics.test.ts test/summary-delivery.test.ts
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15

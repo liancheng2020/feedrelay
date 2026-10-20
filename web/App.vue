@@ -108,6 +108,11 @@ interface Prefs {
   digestTime: string;
 }
 interface Overview {
+  diagnostics: {
+    worker: { running: boolean; heartbeat: number | null; summarizing: boolean };
+    checks: { id: string; ok: boolean; label: string; detail: string }[];
+    queues: { summaries: number; summaryFailures: number; unknownDeliveries: number };
+  };
   demo: boolean;
   stats: Record<string, number | string | null>;
   settings: Prefs;
@@ -810,10 +815,10 @@ onUnmounted(() => {
           ><i
             :class="{
               live:
-                overview?.stats.heartbeat && Date.now() - Number(overview.stats.heartbeat) < 120000,
+                overview?.diagnostics?.worker.running,
             }"
           ></i
-          >后台任务</span
+          >{{ overview?.diagnostics?.worker.running ? (overview.diagnostics.worker.summarizing ? '摘要处理中' : '后台运行中') : '后台待检查' }}</span
         ><small>{{ time(overview?.stats.heartbeat) }}</small
         ><button v-if="authMode === 'password'" class="quiet" @click="logout" :disabled="busy">
           <LogOut :size="16" />退出登录
@@ -1192,6 +1197,18 @@ onUnmounted(() => {
         </section>
       </template>
       <template v-if="view === 'settings'">
+        <section v-if="overview?.diagnostics" class="settings-band" aria-label="运行检查">
+          <h2>运行检查</h2>
+          <dl class="runtime-checks">
+            <div v-for="check in overview.diagnostics.checks" :key="check.id">
+              <dt><Check v-if="check.ok" :size="16" /><AlertTriangle v-else :size="16" />{{ check.label }}</dt>
+              <dd :class="{ 'check-warning': !check.ok }">{{ check.detail }}</dd>
+            </div>
+          </dl>
+          <p v-if="overview.diagnostics.queues.summaryFailures || overview.diagnostics.queues.unknownDeliveries" class="muted">
+            摘要待处理 {{ overview.diagnostics.queues.summaryFailures }} · 推送需核查 {{ overview.diagnostics.queues.unknownDeliveries }}
+          </p>
+        </section>
         <section v-if="authMode === 'password'" class="settings-band">
           <h2>管理密码</h2>
           <PasswordSettings :busy="busy" @save="changePassword" />
