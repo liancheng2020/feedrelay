@@ -395,12 +395,16 @@ export class Store {
   }
   schedule() {
     this.tx(() => {
+      this.recoverJobs();
       const settings = this.settings();
       let mail = false;
       for (const s of this.all<Source>(
         'SELECT * FROM sources WHERE enabled=1 AND deleted=0 AND next_check<=?',
         this.now(),
       )) {
+        const kind = s.type === 'email' ? 'mailbox' : 'source';
+        const resource = s.type === 'email' ? 'default' : s.id;
+        if (this.get("SELECT 1 FROM jobs WHERE kind=? AND resource=? AND status IN ('pending','running','retry_wait')", kind, resource)) continue;
         if (s.type === 'email') mail = true;
         else this.enqueue('source', s.id, s.generation);
         const interval =
@@ -417,11 +421,7 @@ export class Store {
   }
   claimJob() {
     return this.tx(() => {
-      this.run(
-        `UPDATE jobs SET status=CASE WHEN attempt>=5 THEN 'failed' ELSE 'retry_wait' END,available=?,token='',lease=0,error='LEASE_EXPIRED' WHERE status='running' AND lease<=?`,
-        this.now(),
-        this.now(),
-      );
+      this.recoverJobs();
       const j = this.get<Job>(
         `SELECT * FROM jobs WHERE status IN ('pending','retry_wait') AND available<=? AND attempt<5 ORDER BY available,created LIMIT 1`,
         this.now(),
@@ -436,6 +436,17 @@ export class Store {
       );
       return this.get<Job>('SELECT * FROM jobs WHERE id=?', j.id)!;
     });
+  }
+  private recoverJobs() {
+    const expired = this.all<Job>("SELECT * FROM jobs WHERE status='running' AND lease<=?", this.now());
+    for (const job of expired) {
+      this.run("UPDATE jobs SET status=?,available=?,token='',lease=0,error='LEASE_EXPIRED' WHERE id=?",
+        job.attempt >= 5 ? 'failed' : 'retry_wait', this.now(), job.id);
+      if (job.kind === 'source')
+        this.run('UPDATE sources SET error=? WHERE id=? AND generation=? AND enabled=1 AND deleted=0', 'LEASE_EXPIRED', job.resource, job.generation);
+      if (job.kind === 'mailbox')
+        this.run("UPDATE sources SET error='LEASE_EXPIRED' WHERE type='email' AND enabled=1 AND deleted=0");
+    }
   }
   validJob(j: Job) {
     return !!this.get(

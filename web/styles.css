@@ -1180,6 +1180,12 @@ label select {
 .runtime-checks .check-warning {
   color: #9a6b20;
 }
+.source-issues { list-style: none; margin: 10px 0 0; padding: 0; max-width: 680px; }
+.source-issues li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.source-issue-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
+.source-issue-main strong { color: #25312e; font-size: 13px; }
+.source-issue-main small { color: var(--muted); font-size: 11px; }
+.source-issues .icon { flex-shrink: 0; }
 @media (max-width: 600px) {
   .runtime-checks > div {
     grid-template-columns: 1fr;

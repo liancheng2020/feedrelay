@@ -112,6 +112,7 @@ interface Overview {
     worker: { running: boolean; heartbeat: number | null; summarizing: boolean };
     checks: { id: string; ok: boolean; label: string; detail: string }[];
     queues: { summaries: number; summaryFailures: number; unknownDeliveries: number };
+    sourceIssues?: { sourceId: string; name: string; error: string; lastSuccess: number | null; status: string; nextCheck: number }[];
   };
   demo: boolean;
   stats: Record<string, number | string | null>;
@@ -221,6 +222,9 @@ const labels: Record<string, string> = {
   batched: '已纳入日报',
 };
 const errors: Record<string, string> = {
+  LEASE_EXPIRED: '上次采集中断，等待自动恢复',
+  CHECK_RATE_LIMITED: '操作频繁，请稍后重试',
+  YOUTUBE_NETWORK_ERROR: 'YouTube 连接失败，请检查网络或代理',
   SUMMARY_REQUIRED: '等待摘要完成后推送',
   YOUTUBE_FEED_NOT_READY: '订阅接口暂不可用（404）',
   YOUTUBE_HTTP_404: '订阅接口暂不可用（404）',
@@ -290,8 +294,6 @@ const errors: Record<string, string> = {
   IMAP_NOT_ENABLED: '尚未配置邮箱连接。',
   IMAP_AUTH_FAILED: '邮箱认证失败，请检查 IMAP 开关和授权码。',
   IMAP_CONNECTION_FAILED: '邮箱连接失败，稍后重试。',
-  YOUTUBE_NETWORK_ERROR:
-    '服务端无法连接 YouTube，请检查服务器网络或配置 YOUTUBE_PROXY_URL；浏览器代理不会自动作用于服务端。',
   MAILBOX_EPOCH_CHANGED: '邮箱标识已变化，已暂停规则，请重新建立基线。',
   SEND_UNCONFIRMED: '发送结果不确定，请在接收端人工核查。',
   DEMO_ACCEPTED: '模拟发送成功',
@@ -719,6 +721,13 @@ function switchView(next: string) {
   location.hash = next;
   if (next === 'settings' && overview.value) preferences.value = { ...overview.value.settings };
 }
+function recheckSource(sourceId: string, name: string) {
+  confirmation.value = {
+    title: '立即重新采集？',
+    text: `重新采集“${name}”，新内容将按现有授权继续摘要和推送，可能产生模型费用。`,
+    run: async () => { await api(`/sources/${sourceId}/check`, 'POST', {}); },
+  };
+}
 async function filter() {
   page.value = 1;
   await act(load);
@@ -847,7 +856,7 @@ onUnmounted(() => {
           <h1>{{ heading }}</h1>
         </div>
         <div class="actions">
-          <button class="icon" title="刷新" aria-label="刷新" :disabled="busy" @click="act(load)">
+          <button class="icon" :title="view === 'settings' ? '刷新状态' : '刷新'" aria-label="刷新" :disabled="busy" @click="act(load, view === 'settings' ? '运行状态已刷新。' : '')">
             <RefreshCw :size="18" :class="{ spin: busy }" /></button
           ><button v-if="view === 'sources'" class="primary" @click="add()">
             <Plus :size="17" />添加订阅源
@@ -1152,7 +1161,7 @@ onUnmounted(() => {
                 {{ explain(s.error || s.coverage) }}
               </p>
               <p v-if="latestJob(s)" class="job-result">
-                {{ labels[latestJob(s)!.status] || latestJob(s)!.status
+                {{ latestJob(s)!.status === 'pending' ? '等待采集' : labels[latestJob(s)!.status] || latestJob(s)!.status
                 }}<span v-if="latestJob(s)!.error && s.type !== 'youtube'">
                   · {{ explain(latestJob(s)!.error) }}</span
                 ><span v-else> {{ jobSummary(latestJob(s)!) }}</span>
@@ -1160,13 +1169,13 @@ onUnmounted(() => {
             </div>
             <div class="source-actions">
               <button
-                title="检查连接"
-                aria-label="检查连接"
+                :title="s.enabled ? '立即采集' : '检查连接'"
+                :aria-label="s.enabled ? '立即采集' : '检查连接'"
                 class="icon"
                 :disabled="busy"
                 @click="
-                  act(async () => {
-                    await api(`/sources/${s.id}/check`, 'POST');
+                  s.enabled ? recheckSource(s.id, s.name) : act(async () => {
+                    await api(`/sources/${s.id}/check`, 'POST', {});
                   }, '检查已排队。')
                 "
               >
@@ -1202,7 +1211,19 @@ onUnmounted(() => {
           <dl class="runtime-checks">
             <div v-for="check in overview.diagnostics.checks" :key="check.id">
               <dt><Check v-if="check.ok" :size="16" /><AlertTriangle v-else :size="16" />{{ check.label }}</dt>
-              <dd :class="{ 'check-warning': !check.ok }">{{ check.detail }}</dd>
+              <dd :class="{ 'check-warning': !check.ok }">
+                <span>{{ check.detail }}</span>
+                <ul v-if="check.id === 'sources' && overview.diagnostics.sourceIssues?.length" class="source-issues">
+                  <li v-for="issue in overview.diagnostics.sourceIssues" :key="issue.sourceId">
+                    <div class="source-issue-main">
+                      <strong>{{ issue.name }}</strong>
+                      <span>{{ issue.status === 'pending' ? '等待重新采集' : issue.status === 'running' ? '正在重新采集' : explain(issue.error) }}</span>
+                      <small v-if="!['pending', 'running'].includes(issue.status)">下次{{ issue.status === 'retry_wait' ? '重试' : '采集' }} {{ time(issue.nextCheck) }}</small>
+                    </div>
+                    <button class="icon" :aria-label="`重新采集 ${issue.name}`" title="重新采集" :disabled="busy || ['pending', 'running'].includes(issue.status)" @click="recheckSource(issue.sourceId, issue.name)"><RefreshCw :size="16" :class="{ spin: ['pending', 'running'].includes(issue.status) }" /></button>
+                  </li>
+                </ul>
+              </dd>
             </div>
           </dl>
           <p v-if="overview.diagnostics.queues.summaryFailures || overview.diagnostics.queues.unknownDeliveries" class="muted">

@@ -10,11 +10,21 @@ export function diagnostics(engine: Engine) {
   const summary = engine.summaries.describe();
   const enabled = store.sources().filter(s => s.enabled);
   const automatic = enabled.filter(s => s.notify && s.summary_mode === 'auto');
+  const sourceIssues = enabled.filter(s => s.error).map(s => {
+    const job = store.get<{ status: string; available: number }>(
+      `SELECT status,available FROM jobs WHERE kind=? AND resource=? AND (?='mailbox' OR generation=?) AND status IN ('pending','running','retry_wait') ORDER BY created DESC LIMIT 1`,
+      s.type === 'email' ? 'mailbox' : 'source', s.type === 'email' ? 'default' : s.id,
+      s.type === 'email' ? 'mailbox' : 'source', s.generation,
+    );
+    return { sourceId: s.id, name: s.name, error: s.error, lastSuccess: s.last_success,
+      status: job?.status || 'failed', nextCheck: job?.status === 'retry_wait' ? job.available : s.next_check };
+  });
   return {
     worker: { running: worker, heartbeat: heartbeat || null, phase: parsed.phase, summarizing: parsed.summarizing },
+    sourceIssues,
     checks: [
       { id: 'worker', ok: worker, label: '后台任务', detail: worker ? '运行中' : '未检测到近期心跳，检查服务或独立 Worker' },
-      { id: 'sources', ok: enabled.length > 0 && !enabled.some(s => s.error), label: '订阅采集', detail: `${enabled.length} 个已启用；${enabled.filter(s => s.error).length} 个异常` },
+      { id: 'sources', ok: enabled.length > 0 && sourceIssues.length === 0, label: '订阅采集', detail: `${enabled.length} 个已启用；${sourceIssues.length} 个异常` },
       { id: 'push', ok: engine.pushReady, label: '推送通道', detail: engine.pushReady ? '已就绪，实际收件仍需验证' : '未就绪，请检查绑定或通道配置' },
       { id: 'summary', ok: summary.ready && summary.enabled && summary.calls < summary.maxCalls && summary.reservedCny < summary.maxCostCny,
         label: 'AI 摘要', detail: !summary.ready ? '模型未配置或不可用' : !summary.enabled ? '未开启摘要预算' : summary.calls >= summary.maxCalls || summary.reservedCny >= summary.maxCostCny ? '预算已用完' : '模型与预算已配置' },

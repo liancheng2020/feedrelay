@@ -13,7 +13,7 @@ import {
   type Config,
   type Settings,
 } from './config.js';
-import { Store, type Item, type Delivery } from './store.js';
+import { Store, type Item, type Delivery, type Job } from './store.js';
 import { Engine } from './engine.js';
 import { normalizeSource } from './adapters.js';
 import { advanceDemo } from './demo.js';
@@ -335,18 +335,23 @@ export function createApp(store: Store, config: Config, engine: Engine) {
   router.post('/api/sources/:id/check', (ctx) => {
     const s = store.source(String(ctx.params.id));
     const resource = s.type === 'email' && s.enabled ? 'default' : s.id;
-    const recent = store.get<{ n: number }>(
-      `SELECT count(*) n FROM jobs WHERE resource=? AND created>?`,
-      resource,
-      store.now() - 60_000,
-    )!.n;
-    if (recent >= 5) throw new AppError('CHECK_RATE_LIMITED', 429);
     ctx.status = 202;
-    ctx.body = store.enqueue(
-      !s.enabled ? 'probe' : s.type === 'email' ? 'mailbox' : 'source',
-      s.type === 'email' && s.enabled ? 'default' : s.id,
-      s.generation,
-    );
+    ctx.body = store.tx(() => {
+      const recent = store.get<{ n: number }>(
+        "SELECT count(*) n FROM events WHERE action='source_check_requested' AND resource=? AND at>?",
+        resource, store.now() - 60_000,
+      )!.n;
+      if (recent >= 5) throw new AppError('CHECK_RATE_LIMITED', 429);
+      store.event('source_check_requested', resource);
+      const job = store.enqueue(
+        !s.enabled ? 'probe' : s.type === 'email' ? 'mailbox' : 'source',
+        resource, s.generation,
+      );
+      // Manual retries reuse the active job without resetting attempts or interrupting a lease.
+      if (job.status === 'pending' || job.status === 'retry_wait')
+        store.run("UPDATE jobs SET status='pending',available=? WHERE id=?", store.now(), job.id);
+      return store.get<Job>('SELECT * FROM jobs WHERE id=?', job.id);
+    });
   });
   router.get('/api/jobs', (ctx) => {
     ctx.body = store.all(
