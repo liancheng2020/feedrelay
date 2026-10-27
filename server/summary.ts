@@ -172,11 +172,15 @@ export class SummaryService {
         content as string,
         sourceId,
       );
-      if (!notify)
+      if (!notify) {
+        for (const d of this.store.all<{ id: string }>(
+          "SELECT id FROM deliveries WHERE status='sending' AND item_id IN (SELECT output_item FROM summaries WHERE source_id=?)", sourceId,
+        )) this.store.blockContextRecovery(d.id);
         this.store.run(
-          "UPDATE deliveries SET status='cancelled',snapshot='',error='SUMMARY_PUSH_REVOKED' WHERE status IN ('pending','retry_wait') AND item_id IN (SELECT output_item FROM summaries WHERE source_id=?)",
+          "UPDATE deliveries SET status='cancelled',snapshot='',error='SUMMARY_PUSH_REVOKED' WHERE (status IN ('pending','retry_wait') OR (status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE'))) AND item_id IN (SELECT output_item FROM summaries WHERE source_id=?)",
           sourceId,
         );
+      }
       this.store.event('summary_consent_changed', sourceId, String(mode));
       this.reconcile();
     });

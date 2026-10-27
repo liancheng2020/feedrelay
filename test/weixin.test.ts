@@ -6,6 +6,9 @@ import { readConfig } from '../server/config.js';
 import { Weixin, weixinBase } from '../server/weixin.js';
 import { Engine } from '../server/engine.js';
 import { createApp } from '../server/app.js';
+import { type Delivery } from '../server/store.js';
+import { freezeDigest } from '../server/digest.js';
+import { Aihot } from '../server/aihot.js';
 
 const user = 'synthetic-user@im.wechat',
   bot = 'synthetic-bot@im.bot';
@@ -390,4 +393,302 @@ test('WX-09: live polling envelope can omit ret, but empty or malformed response
   assert.equal(f.service.describe().ready, true);
   f.poll({});
   await assert.rejects(f.service.pollUpdates(), /WEIXIN_INVALID_RESPONSE/);
+});
+
+test('AC1: fresh context recovers after restart with the same identity and bounded attempts', async t => {
+  const f = setup(t);
+  await f.bind();
+  await f.inbound();
+  const item = f.store.put(incoming(), [f.source()], true, f.service.destination);
+  const read = () => f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
+  for (let n = 1; n <= 5; n++) {
+    const d = f.store.claimDelivery(f.service.destination)!;
+    assert.ok(d);
+    f.send({ ret: -2 });
+    f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+    f.service.recoverDeliveries();
+    assert.equal(read().status, 'failed');
+    f.advance(3600000);
+    await f.inbound(f.now(), `context-${n}`);
+    const restarted = new Weixin(f.store, f.config, f.request);
+    restarted.recoverDeliveries();
+    assert.equal(read().status, n < 5 ? 'retry_wait' : 'failed');
+    assert.equal(read().attempt, n);
+    assert.equal(read().id, d.id);
+  }
+  assert.equal(f.store.claimDelivery(f.service.destination), undefined);
+  assert.equal(new Set(f.calls.filter(c => c.url.pathname.endsWith('sendmessage')).map(c => c.body.msg.client_id)).size, 1);
+});
+
+test('AC1: new inbound before rejection finishes is not lost; worker sends exactly once after recovery', async t => {
+  const f = setup(t);
+  await f.bind(); await f.inbound();
+  const item = f.store.put(incoming(), [f.source()], true, f.service.destination);
+  const d = f.store.claimDelivery(f.service.destination)!;
+  let release!: () => void;
+  f.service.request = async (url, init) => {
+    if (String(url).endsWith('sendmessage')) {
+      await new Promise<void>(r => { release = r; });
+      return Response.json({ ret: -2 });
+    }
+    return f.request(url, init);
+  };
+  const sending = f.service.send(d.snapshot, d.id);
+  f.advance(1); await f.inbound(f.now(), 'new-context');
+  release();
+  f.store.finishDelivery(d, await sending);
+  assert.equal(f.service.describe().ready, true);
+  f.advance(3600000);
+  const engine = new Engine(f.store, f.config, { feed: async () => ({ unchanged: true, items: [] }) });
+  engine.weixin.request = f.request;
+  t.after(() => engine.stop());
+  await engine.cycle(); await engine.cycle();
+  const result = f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
+  assert.equal(result.status, 'sent');
+  assert.equal(result.attempt, 2);
+  assert.equal(f.calls.filter(c => c.url.pathname.endsWith('sendmessage')).length, 1);
+});
+
+test('AC1: needs-message and legacy failures require a subsequent valid context', async t => {
+  const f = setup(t);
+  await f.bind();
+  const item = f.store.put(incoming(), [f.source()], true, f.service.destination);
+  const d = f.store.claimDelivery(f.service.destination)!;
+  f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!.error, 'WEIXIN_NEEDS_MESSAGE');
+  await f.inbound(); f.service.recoverDeliveries();
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'retry_wait');
+  f.store.run("UPDATE deliveries SET status='failed',error='WEIXIN_CONTEXT_REJECTED' WHERE id=?", d.id);
+  f.store.run('DELETE FROM meta WHERE key=?', `weixin-context:${d.id}`);
+  f.service.recoverDeliveries();
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'failed');
+  await f.inbound(f.now() - 1, 'stale'); f.service.recoverDeliveries();
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'failed');
+  f.advance(1); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'retry_wait');
+});
+
+for (const boundary of ['unknown', 'cancelled', 'expired', 'deleted', 'source-disabled', 'generation', 'old-target'] as const) {
+  test(`AC1: recovery excludes ${boundary}`, async t => {
+    const f = setup(t); await f.bind(); await f.inbound();
+    const source = f.source();
+    const item = f.store.put(incoming(), [source], true, f.service.destination);
+    const d = f.store.claimDelivery(f.service.destination)!;
+    f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+    if (boundary === 'unknown' || boundary === 'cancelled') f.store.run('UPDATE deliveries SET status=? WHERE id=?', boundary, d.id);
+    if (boundary === 'expired') f.store.run('UPDATE items SET expired=1 WHERE id=?', item.id);
+    if (boundary === 'deleted') f.store.deleteItem(item.id);
+    if (boundary === 'source-disabled') f.store.toggle(source.id, false, false);
+    if (boundary === 'generation') f.store.toggle(source.id, true, true);
+    if (boundary === 'old-target') await f.bind(true);
+    f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+    assert.notEqual(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'retry_wait');
+    assert.equal(f.store.claimDelivery(f.service.destination), undefined);
+  });
+}
+
+for (const disable of [false, true]) {
+  test(`AC1/2: bound but unready daily freezes safely; disabled=${disable}`, async t => {
+    const f = setup(t); await f.bind();
+    const engine = new Engine(f.store, f.config, { feed: async () => ({ unchanged: true, items: [] }) });
+    engine.weixin.request = f.request;
+    let calls = 0;
+    engine.aihot = new Aihot(f.store, async () => {
+      calls++;
+      return Response.json({ report: { date: '2026-10-17', sections: [{ items: [{ title: 'Synthetic daily' }] }] } });
+    });
+    t.after(() => engine.stop());
+    engine.aihot.configure(true); f.advance(22 * 3600000); await engine.cycle();
+    assert.equal(calls, 1); assert.equal(f.store.get('SELECT status FROM deliveries')!.status, 'pending');
+    await f.inbound(); f.send({ ret: -2 }); await engine.cycle();
+    assert.equal(f.store.get('SELECT status FROM deliveries')!.status, 'failed');
+    if (disable) { engine.aihot.configure(false); engine.aihot.configure(true); }
+    f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.send({ ret: 0 });
+    await engine.cycle();
+    assert.equal(f.store.get('SELECT status FROM deliveries')!.status, disable ? 'cancelled' : 'sent');
+  });
+}
+
+test('AC2: unbound Weixin does not fetch daily reports', async t => {
+  const f = setup(t);
+  const engine = new Engine(f.store, f.config);
+  engine.aihot = new Aihot(f.store, async () => { assert.fail('must not fetch'); });
+  t.after(() => engine.stop());
+  engine.aihot.configure(true); f.advance(22 * 3600000); await engine.cycle();
+  assert.equal(f.store.get('SELECT count(*) n FROM digest_batches')!.n, 0);
+});
+
+for (const digest of [false, true]) {
+  test(`AC1: revoked summary consent cannot resend retained snapshot, digest=${digest}`, async t => {
+    const f = setup(t); await f.bind(); await f.inbound();
+    const source = f.source();
+    const summaries = f.engine.summaries;
+    summaries.destination = f.service.destination;
+    summaries.configure({ enabled: true, maxCalls: 10, maxCostCny: 1, confirmed: true });
+    summaries.authorize(source.id, 'auto', false, true, 'captions');
+    if (digest) {
+      f.store.changeDeliveryMode(source.id, 'digest');
+      f.store.setSettings({ ...f.store.settings(), digestTime: '12:00' });
+    }
+    f.advance(1);
+    const item = f.store.put(incoming(), [f.store.source(source.id)], true, f.service.destination);
+    summaries.enqueue(item.id);
+    await summaries.cycle(f.service.destination);
+    summaries.reconcile();
+    if (digest) { f.advance(86400000); freezeDigest(f.store, f.service.destination); }
+    const d = f.store.claimDelivery(f.service.destination)!;
+    assert.ok(d); assert.match(d.snapshot, /模拟摘要/);
+    f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+    summaries.authorize(source.id, 'off', false, true);
+    f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+    summaries.reconcile();
+    assert.equal(f.store.claimDelivery(f.service.destination), undefined);
+    assert.notEqual(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'sending');
+  });
+}
+
+for (const revoke of [false, true]) {
+  test(`AC1: ordinary digest recovery, member revoked=${revoke}`, async t => {
+    const f = setup(t); await f.bind(); await f.inbound();
+    const source = f.source(); f.store.changeDeliveryMode(source.id, 'digest');
+    f.store.setSettings({ ...f.store.settings(), digestTime: '12:00' });
+    f.store.put(incoming(), [f.store.source(source.id)], true, f.service.destination);
+    freezeDigest(f.store, f.service.destination);
+    const d = f.store.claimDelivery(f.service.destination)!;
+    assert.equal(d.mode, 'digest_part');
+    f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+    if (revoke) f.store.toggle(source.id, false, false);
+    f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+    assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, revoke ? 'cancelled' : 'retry_wait');
+    assert.equal(!!f.store.claimDelivery(f.service.destination), !revoke);
+  });
+}
+
+for (const digest of [false, true]) {
+  test(`AC1: notification disable and reenable never restores old failures, digest=${digest}`, async t => {
+    const f = setup(t); await f.bind(); await f.inbound();
+    const source = f.source();
+    if (digest) {
+      f.store.changeDeliveryMode(source.id, 'digest');
+      f.store.setSettings({ ...f.store.settings(), digestTime: '12:00' });
+    }
+    f.store.put(incoming(), [f.store.source(source.id)], true, f.service.destination);
+    if (digest) freezeDigest(f.store, f.service.destination);
+    const d = f.store.claimDelivery(f.service.destination)!;
+    f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+    f.store.toggle(source.id, true, false);
+    f.store.toggle(source.id, true, true);
+    f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+    assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'cancelled');
+    assert.equal(f.store.claimDelivery(f.service.destination), undefined);
+  });
+}
+
+test('AC1: revoking only summary push preserves analysis but cancels failed output permanently', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const source = f.source('youtube', false), summaries = f.engine.summaries;
+  summaries.destination = f.service.destination;
+  summaries.configure({ enabled: true, maxCalls: 10, maxCostCny: 1, confirmed: true });
+  summaries.authorize(source.id, 'manual', true, true, 'captions');
+  f.advance(1);
+  const item = f.store.put(incoming(), [f.store.source(source.id)], false, f.service.destination);
+  summaries.enqueue(item.id); await summaries.cycle(f.service.destination);
+  const row = summaries.list(item.id)[0];
+  summaries.pushLatest(item.id, row.id, row.revision);
+  const d = f.store.claimDelivery(f.service.destination)!;
+  f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+  summaries.authorize(source.id, 'manual', false, true, 'captions');
+  summaries.authorize(source.id, 'manual', true, true, 'captions');
+  f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+  summaries.reconcile();
+  assert.equal(summaries.list(item.id)[0].status, 'succeeded');
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'cancelled');
+  assert.equal(f.store.claimDelivery(f.service.destination), undefined);
+});
+
+for (const kind of ['immediate', 'digest', 'summary', 'aihot'] as const) {
+  for (const outcome of ['rejected', 'unknown', 'sent', 'before-send'] as const) {
+    test(`AC1: in-flight revocation is durable, ${kind}/${outcome}`, async t => {
+      const f = setup(t); await f.bind(); await f.inbound();
+      const summaries = f.engine.summaries;
+      let revoke!: () => void;
+      if (kind === 'aihot') {
+        const daily = new Aihot(f.store, async () => Response.json({ report: {
+          date: '2026-10-17', sections: [{ items: [{ title: 'Synthetic daily' }] }],
+        } }));
+        daily.configure(true); f.advance(22 * 3600000); await daily.cycle(f.service.destination);
+        revoke = () => { daily.configure(false); daily.configure(true); };
+      } else {
+        const source = f.source('youtube', kind !== 'summary');
+        if (kind === 'summary') {
+          summaries.destination = f.service.destination;
+          summaries.configure({ enabled: true, maxCalls: 10, maxCostCny: 1, confirmed: true });
+          summaries.authorize(source.id, 'manual', true, true, 'captions');
+          f.advance(1);
+          const item = f.store.put(incoming(), [f.store.source(source.id)], false, f.service.destination);
+          summaries.enqueue(item.id); await summaries.cycle(f.service.destination);
+          const row = summaries.list(item.id)[0]; summaries.pushLatest(item.id, row.id, row.revision);
+          revoke = () => {
+            summaries.authorize(source.id, 'manual', false, true, 'captions');
+            summaries.authorize(source.id, 'manual', true, true, 'captions');
+          };
+        } else {
+          if (kind === 'digest') {
+            f.store.changeDeliveryMode(source.id, 'digest');
+            f.store.setSettings({ ...f.store.settings(), digestTime: '12:00' });
+          }
+          f.store.put(incoming(), [f.store.source(source.id)], true, f.service.destination);
+          if (kind === 'digest') freezeDigest(f.store, f.service.destination);
+          revoke = () => { f.store.toggle(source.id, true, false); f.store.toggle(source.id, true, true); };
+        }
+      }
+      const d = f.store.claimDelivery(f.service.destination)!; assert.ok(d);
+      let release!: () => void, sends = 0;
+      f.service.request = async (url, init) => {
+        if (String(url).endsWith('sendmessage')) {
+          sends++;
+          await new Promise<void>(r => { release = r; });
+          return Response.json(outcome === 'sent' ? { ret: 0 } : outcome === 'unknown' ? {} : { ret: -2 });
+        }
+        return f.request(url, init);
+      };
+      if (outcome === 'before-send') revoke();
+      const work = f.service.send(d.snapshot, d.id);
+      if (outcome !== 'before-send') { revoke(); release(); }
+      f.store.finishDelivery(d, await work);
+      f.advance(3600000); await f.inbound(f.now(), 'fresh');
+      const restarted = new Weixin(f.store, f.config, f.request);
+      restarted.recoverDeliveries(); summaries.reconcile();
+      assert.equal(f.store.claimDelivery(f.service.destination), undefined);
+      const settled = f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!;
+      assert.equal(settled.status, outcome === 'sent' || outcome === 'unknown' ? outcome : 'failed');
+      assert.equal(sends, outcome === 'before-send' ? 0 : 1);
+      if (outcome === 'before-send') assert.equal(settled.error, 'DELIVERY_AUTHORIZATION_REVOKED');
+      if (outcome === 'rejected') {
+        f.store.resolveDelivery(d.id, 'retry', f.service.destination);
+        assert.equal(f.store.get('SELECT 1 FROM meta WHERE key=?', `weixin-context:${d.id}`), undefined);
+        const manual = f.store.claimDelivery(f.service.destination)!;
+        revoke();
+        f.store.finishDelivery(manual, await restarted.send(manual.snapshot, manual.id));
+        assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.error, 'DELIVERY_AUTHORIZATION_REVOKED');
+      }
+    });
+  }
+}
+
+test('AC1: another authorized source keeps recovery valid until its last notification is revoked', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const a = f.source();
+  const b = f.store.createSource({ type: 'youtube', name: 'Other', channel: 'UC' + 'b'.repeat(22) });
+  f.store.toggle(b.id, true, true);
+  f.store.put(incoming(), [a, f.store.source(b.id)], true, f.service.destination);
+  const d = f.store.claimDelivery(f.service.destination)!;
+  f.store.toggle(a.id, true, false);
+  assert.equal(f.store.get('SELECT 1 FROM meta WHERE key=?', `weixin-context:${d.id}`), undefined);
+  f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+  f.advance(3600000); await f.inbound(f.now(), 'fresh'); f.service.recoverDeliveries();
+  const retry = f.store.claimDelivery(f.service.destination)!; assert.ok(retry);
+  f.store.toggle(b.id, true, false); f.store.toggle(b.id, true, true);
+  f.store.finishDelivery(retry, await f.service.send(retry.snapshot, retry.id));
+  assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.error, 'DELIVERY_AUTHORIZATION_REVOKED');
 });

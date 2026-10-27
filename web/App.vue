@@ -134,7 +134,7 @@ const authenticated = ref(false),
   password = ref('');
 const remember = ref(false), mustChangePassword = ref(false);
 const authMode = ref<'local' | 'password'>('password');
-const aihot = ref({ enabled: false, startDate: '', nextCheck: 0, lastDate: '', error: '' });
+const aihot = ref({ enabled: false, startDate: '', nextCheck: 0, lastDate: '', error: '', checkDate: '' });
 const routeItem = () => location.hash.match(/^#items\/([a-f0-9-]{36})$/i)?.[1] || '';
 const detailId = ref(routeItem());
 const initialView = location.hash.slice(1);
@@ -242,7 +242,8 @@ const errors: Record<string, string> = {
   WEIXIN_INVALID_PAIR_CODE: '请填写手机微信显示的4至8位数字配对码。',
   WEIXIN_BINDING_EXISTS: '微信提示已存在绑定，但没有返回新凭证。请检查微信授权后重新扫码。',
   WEIXIN_LOCAL_STATE_INVALID: '本机微信绑定信息无法解密，请解除后重新扫码。',
-  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送上下文，请给机器人发一条消息，再重试失败记录。',
+  WEIXIN_CONTEXT_REJECTED: '请给机器人发一条新消息；有效上下文更新后，仍有效且未达重试上限的任务自动恢复。结果不确定的记录仍需人工核查。',
+  WEIXIN_NEEDS_MESSAGE: '请给机器人发一条新消息，符合条件的待发任务将自动恢复。',
   WEIXIN_SESSION_EXPIRED: '微信登录已过期，请重新扫码。',
   WEIXIN_RATE_LIMITED: '微信接口限流，将按队列有限重试。',
   WEIXIN_SEND_REJECTED: '微信明确拒绝此消息，未标记为发送成功。',
@@ -304,6 +305,7 @@ const errors: Record<string, string> = {
   FEISHU_NOT_ENABLED: '尚未配置飞书应用机器人。',
   CONTENT_EXPIRED: '内容已过保留期，不可重发。',
   SOURCE_DISABLED: '对应订阅源已停用，不能重发。',
+  DELIVERY_AUTHORIZATION_REVOKED: '这条消息的推送授权已撤销，不会自动重发。',
   INVALID_SETTINGS: '请检查数值范围。',
   INVALID_TIMEZONE: '时区无效。',
   SOURCE_UNAVAILABLE: '采集失败，系统将按预算重试。',
@@ -1023,8 +1025,11 @@ onUnmounted(() => {
             <div class="digest-schedule-main">
               <h2>AIHOT AI 日报</h2>
               <p>每天 10:00 · 北京时间</p>
-              <p v-if="aihot.error" class="digest-schedule-note">{{ aihot.error === 'AIHOT_NOT_PUBLISHED' ? '今日日报尚未发布' : '获取失败，稍后重试' }}</p>
-              <p v-else-if="aihot.enabled && !aihot.lastDate">首次推送：{{ aihot.startDate }} 10:00</p>
+              <p v-if="aihot.error" class="digest-schedule-note">{{ aihot.checkDate ? `${aihot.checkDate} 检查结果` : '上次检查结果（日期未知）' }}：{{ aihot.error === 'AIHOT_NOT_PUBLISHED' ? '日报尚未发布或内容尚未就绪' : ['AIHOT_INVALID_REPORT', 'AIHOT_RESPONSE_TOO_LARGE', 'AIHOT_ENTRY_TOO_LONG'].includes(aihot.error) ? '日报格式异常，等待上游恢复' : '获取失败，等待自动重试' }}</p>
+              <p v-if="aihot.enabled && aihot.nextCheck > Date.now()">下次检查：{{ time(aihot.nextCheck) }}</p>
+              <p v-else-if="aihot.enabled && aihot.nextCheck">等待后台检查 · 每天北京时间 10:00 起检查</p>
+              <p v-else-if="aihot.enabled && !aihot.lastDate">首次检查：{{ aihot.startDate }} 10:00</p>
+              <p v-if="aihot.lastDate">最近入队版次：{{ aihot.lastDate }}（送达状态见下方记录）</p>
             </div>
             <div class="digest-schedule-actions">
               <label class="check"><input type="checkbox" :checked="aihot.enabled" :disabled="busy"

@@ -365,11 +365,20 @@ export class Store {
     });
   }
   private cancelOrphans() {
+    // An in-flight request may be rejected only after notifications are re-enabled.
+    // Keep its outcome intact, but permanently fence automatic context recovery.
+    for (const d of this.all<{ id: string }>(
+      `SELECT d.id FROM deliveries d WHERE d.status='sending' AND (
+        (d.mode<>'digest_part' AND NOT EXISTS(SELECT 1 FROM items i WHERE i.id=d.item_id AND i.key LIKE 'test:%')
+          AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=d.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0)
+          AND NOT EXISTS(SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=d.item_id AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off'))
+        OR (d.mode='digest_part' AND EXISTS(SELECT 1 FROM deliveries member WHERE member.part_id=d.id AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=member.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0))))`,
+    )) this.blockContextRecovery(d.id);
     this.run(
-      `UPDATE deliveries SET status='cancelled',snapshot='',error='SOURCE_DISABLED' WHERE mode<>'digest_part' AND status IN ('pending','retry_wait','digest_wait') AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id=deliveries.item_id AND i.key LIKE 'test:%') AND NOT EXISTS (SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=deliveries.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0) AND NOT EXISTS (SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=deliveries.item_id AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off')`,
+      `UPDATE deliveries SET status='cancelled',snapshot='',error='SOURCE_DISABLED' WHERE mode<>'digest_part' AND (status IN ('pending','retry_wait','digest_wait') OR (status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE'))) AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id=deliveries.item_id AND i.key LIKE 'test:%') AND NOT EXISTS (SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=deliveries.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0) AND NOT EXISTS (SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=deliveries.item_id AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off')`,
     );
     this.run(
-      `UPDATE deliveries SET status='cancelled',snapshot='',error='DIGEST_MEMBER_DISABLED' WHERE mode='digest_part' AND status IN ('pending','retry_wait') AND EXISTS(SELECT 1 FROM deliveries member WHERE member.part_id=deliveries.id AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=member.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0))`,
+      `UPDATE deliveries SET status='cancelled',snapshot='',error='DIGEST_MEMBER_DISABLED' WHERE mode='digest_part' AND (status IN ('pending','retry_wait') OR (status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE'))) AND EXISTS(SELECT 1 FROM deliveries member WHERE member.part_id=deliveries.id AND NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=member.item_id AND s.enabled=1 AND s.notify=1 AND s.deleted=0))`,
     );
     this.run(
       `UPDATE items SET text='' WHERE kind='digest' AND id IN (SELECT item_id FROM deliveries WHERE mode='digest_part' AND status='cancelled')`,
@@ -596,6 +605,23 @@ export class Store {
       return this.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!;
     });
   }
+  recoverContextDelivery(d: Delivery) {
+    if (!d.snapshot || d.part_id ||
+      !this.get('SELECT 1 FROM items WHERE id=? AND expired=0', d.item_id)) return;
+    const eligible = this.get("SELECT 1 FROM items WHERE id=? AND key LIKE 'test:%'", d.item_id) ||
+      this.get('SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=? AND si.generation=s.generation AND s.enabled=1 AND s.notify=1 AND s.deleted=0', d.item_id) ||
+      this.get("SELECT 1 FROM summaries sm JOIN sources s ON s.id=sm.source_id JOIN events e ON e.resource=sm.output_item AND e.action='summary_push_confirmed' WHERE sm.output_item=? AND sm.status='succeeded' AND sm.generation=s.generation AND s.enabled=1 AND s.deleted=0 AND s.summary_mode<>'off'", d.item_id) ||
+      (d.mode === 'digest_part' && this.get("SELECT 1 FROM digest_batches b JOIN meta m ON m.key='aihot' WHERE b.id=? AND b.slot LIKE 'aihot:%' AND json_extract(m.value,'$.enabled')=1", d.batch_id));
+    if (!eligible || (d.mode === 'digest_part' && this.get(
+      `SELECT 1 FROM deliveries m JOIN items i ON i.id=m.item_id WHERE m.part_id=? AND (m.status<>'batched' OR i.expired=1 OR NOT EXISTS(SELECT 1 FROM source_items si JOIN sources s ON s.id=si.source_id WHERE si.item_id=m.item_id AND si.generation=s.generation AND s.enabled=1 AND s.notify=1 AND s.deleted=0))`, d.id,
+    ))) return;
+    // Preserve destination, identity, attempt budget and backoff. Summary
+    // reconciliation still runs before the worker can claim the recovered task.
+    this.run("UPDATE deliveries SET status='retry_wait' WHERE id=? AND status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE') AND attempt<5", d.id);
+  }
+  blockContextRecovery(id: string) {
+    this.run("INSERT INTO meta(key,value) VALUES (?,'revoked') ON CONFLICT(key) DO UPDATE SET value=excluded.value", `weixin-context:${id}`);
+  }
   finishDelivery(
     d: Delivery,
     outcome: {
@@ -670,6 +696,7 @@ export class Store {
           this.now(),
           id,
         );
+        this.run('DELETE FROM meta WHERE key=?', `weixin-context:${id}`);
       } else
         this.run(
           `UPDATE deliveries SET status='sent',resolution='user_acknowledged',error='' WHERE id=?`,

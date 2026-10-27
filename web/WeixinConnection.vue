@@ -30,8 +30,8 @@ const pair = ref<Pair | null>(null),
 let active = true,
   timer: ReturnType<typeof setTimeout> | undefined;
 const messages: Record<string, string> = {
-  WEIXIN_NEEDS_MESSAGE: '已绑定，等待你在微信向 ClawBot 发送一条消息。',
-  WEIXIN_CONTEXT_REJECTED: '微信拒绝了当前发送上下文，请向机器人发送一条消息后重试失败记录。',
+  WEIXIN_NEEDS_MESSAGE: '已绑定，请向 ClawBot 发一条新消息；有效上下文更新后，仍有效且未达重试上限的任务自动恢复。',
+  WEIXIN_CONTEXT_REJECTED: '微信拒绝了当前发送上下文。请向机器人发一条新消息；仍有效且未达重试上限的任务自动恢复，发送结果不确定的记录仍需人工核查。',
   WEIXIN_SESSION_EXPIRED: '微信登录已失效，需要重新扫码绑定。',
   WEIXIN_NETWORK_ERROR: '暂时无法连接微信服务。',
   WEIXIN_POLL_FAILED: '微信连接异常，正在等待恢复。',

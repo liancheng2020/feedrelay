@@ -140,7 +140,9 @@ export class Engine {
       this.phase = 'collecting';
       this.pulse();
       this.store.cleanup();
-      if (!this.stopped && this.pushReady) await this.aihot.cycle(this.destination, this.feedAbort.signal);
+      const dailyReady = this.config.pushChannel === 'weixin' && !this.config.demo
+        ? this.weixin.describe().bound : this.pushReady;
+      if (!this.stopped && dailyReady) await this.aihot.cycle(this.destination, this.feedAbort.signal, () => this.destination);
       this.store.schedule();
       // One process owns the loop; two bounded reads avoid an unbounded catch-up burst.
       for (let n = 0; n < 2 && !this.stopped; n++) {
@@ -148,6 +150,7 @@ export class Engine {
         const job = this.store.claimJob();
         if (job) await this.execute(job);
       }
+      if (this.config.pushChannel === 'weixin' && !this.config.demo) this.weixin.recoverDeliveries();
       this.summaries.reconcile();
       if (!this.stopped) freezeDigest(this.store, this.destination);
       this.phase = 'sending';

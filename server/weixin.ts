@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { setTimeout as delay } from 'node:timers/promises';
 import QRCode from 'qrcode';
 import { AppError, type Config } from './config.js';
-import { type Store } from './store.js';
+import { type Delivery, type Store } from './store.js';
 import { type SendResult } from './adapters.js';
 
 const API = 'https://ilinkai.weixin.qq.com';
@@ -321,6 +321,7 @@ export class Weixin {
     });
   }
   async pollUpdates(signal?: AbortSignal) {
+    this.recoverDeliveries();
     const account = this.read<Account>(ACCOUNT);
     if (!account || account.error === 'WEIXIN_SESSION_EXPIRED') return;
     const data = await this.call(account.base, 'getupdates', {
@@ -404,11 +405,37 @@ export class Weixin {
     await this.loop;
     this.loop = undefined;
   }
+  recoverDeliveries() {
+    const account = this.read<Account>(ACCOUNT);
+    if (!account) return;
+    const fingerprint = createHash('sha256').update(account.context).digest('hex');
+    this.store.tx(() => {
+      for (const d of this.store.all<Delivery>(
+        "SELECT * FROM deliveries WHERE destination=? AND status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE') AND attempt<5",
+        this.destination,
+      )) {
+        const previous = this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-context:${d.id}`);
+        // Legacy failures have no fingerprint. Fence them at observation time and
+        // require a subsequent inbound context, rather than guessing which was used.
+        if (!previous) {
+          this.store.run('INSERT INTO meta VALUES (?,?)', `weixin-context:${d.id}`, fingerprint);
+          continue;
+        }
+        if (previous.value !== 'revoked' && account.context && !account.error && previous.value !== fingerprint)
+          this.store.recoverContextDelivery(d);
+      }
+      this.store.run("DELETE FROM meta WHERE key LIKE 'weixin-context:%' AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE 'weixin-context:' || d.id=meta.key AND d.status NOT IN ('sent','cancelled'))");
+    });
+  }
   async send(text: string, uuid: string, expected = this.destination): Promise<SendResult> {
     this.enabled();
     const account = this.read<Account>(ACCOUNT);
     if (!account || expected !== this.destination)
       return { status: 'failed', code: 'WEIXIN_DESTINATION_CHANGED' };
+    this.store.run("INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE meta.value<>'revoked'",
+      `weixin-context:${uuid}`, createHash('sha256').update(account.context).digest('hex'));
+    if (this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-context:${uuid}`)?.value === 'revoked')
+      return { status: 'failed', code: 'DELIVERY_AUTHORIZATION_REVOKED' };
     if (!account.context || account.error)
       return { status: 'failed', code: account.error || 'WEIXIN_NEEDS_MESSAGE' };
     if (!text.trim() || Array.from(text).length > 4000)
