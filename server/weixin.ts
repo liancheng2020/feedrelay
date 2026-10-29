@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import QRCode from 'qrcode';
+import { DateTime } from 'luxon';
 import { AppError, type Config } from './config.js';
 import { type Delivery, type Store } from './store.js';
 import { type SendResult } from './adapters.js';
@@ -9,6 +10,18 @@ const API = 'https://ilinkai.weixin.qq.com';
 const ACCOUNT = 'weixin_account',
   PAIR = 'weixin_pair';
 const baseInfo = { channel_version: '2.4.9', bot_agent: 'FeedRelay/0.3' };
+const RETRY_POLICY = 3;
+const localTime = (at: number) => DateTime.fromMillis(at, { zone: 'Asia/Shanghai' });
+const nextHour = (at: number) => localTime(at).startOf('hour').plus({ hours: 1 }).toMillis();
+const dayMidnight = (at: number) => localTime(at).startOf('day').plus({ days: 1 }).toMillis();
+const dayDeadline = (at: number) => dayMidnight(at) + 60_000;
+// A worker may arrive seconds after the hour, never at an arbitrary later minute.
+const retrySlot = (target: number, now: number) => {
+  const aligned = localTime(target).startOf('hour').toMillis() === target ? target : nextHour(target);
+  if (now < aligned + 60_000) return aligned;
+  const currentHour = localTime(now).startOf('hour').toMillis();
+  return now < currentHour + 60_000 ? currentHour : nextHour(now);
+};
 interface Account {
   binding: string;
   token: string;
@@ -21,6 +34,10 @@ interface Account {
   polled: number;
   accepted: number;
   error: string;
+  retryAt?: number;
+  rejectedAt?: number;
+  rejections?: number;
+  retryPolicy?: number;
 }
 interface Pair {
   id: string;
@@ -110,17 +127,74 @@ export class Weixin {
       return 'weixin:unbound';
     }
   }
+  private account(): Account | undefined {
+    const account = this.read<Account>(ACCOUNT);
+    if (!account) return account;
+    if (account.retryAt && account.rejectedAt && this.store.now() >= dayDeadline(account.rejectedAt)) {
+      const expiredDeadline = dayMidnight(account.rejectedAt);
+      this.store.tx(() => {
+        // Fence queued work before clearing an expired account gate, also on restart.
+        for (const d of this.store.all<Delivery>("SELECT * FROM deliveries WHERE destination=? AND created<? AND mode IN ('immediate','digest_part') AND snapshot<>'' AND status IN ('pending','retry_wait','failed')", this.destination, expiredDeadline))
+          if (d.status !== 'failed' || ['WEIXIN_CONTEXT_REJECTED', 'WEIXIN_NEEDS_MESSAGE'].includes(d.error)) this.trackDay(d, true);
+        const a = this.read<Account>(ACCOUNT);
+        if (a?.binding === account.binding && a.rejectedAt === account.rejectedAt) {
+          a.retryAt = 0;
+          a.rejectedAt = undefined;
+          a.rejections = 0;
+          a.retryPolicy = RETRY_POLICY;
+          if (a.error === 'WEIXIN_CONTEXT_REJECTED') a.error = '';
+          this.write(ACCOUNT, a);
+        }
+      });
+      return this.account();
+    }
+    if (account.retryPolicy === RETRY_POLICY) {
+      if (account.retryAt && this.store.now() >= account.retryAt + 60_000) {
+        this.update(account.binding, a => { a.retryAt = retrySlot(a.retryAt || 0, this.store.now()); });
+        return this.read<Account>(ACCOUNT);
+      }
+      return account;
+    }
+    // Upgrade legacy explicit failures once, using the durable attempt time,
+    // never the time of each poll/restart. No unknown delivery is recovered.
+    const last = this.store.get<{ at: number }>(
+      `SELECT MAX(COALESCE((SELECT MAX(a.at) FROM attempts a WHERE a.delivery_id=d.id AND a.status='failed' AND a.code='WEIXIN_CONTEXT_REJECTED'),d.created)) at
+       FROM deliveries d WHERE d.destination=? AND (d.error='WEIXIN_CONTEXT_REJECTED' OR EXISTS
+         (SELECT 1 FROM attempts a WHERE a.delivery_id=d.id AND a.status='failed' AND a.code='WEIXIN_CONTEXT_REJECTED'))`,
+      this.destination,
+    )?.at;
+    {
+      this.update(account.binding, a => {
+        a.retryPolicy = RETRY_POLICY;
+        if (a.retryAt || (last && last > (a.accepted || 0)) || a.error === 'WEIXIN_CONTEXT_REJECTED') {
+          a.rejectedAt = a.rejectedAt || last || this.store.now();
+          a.rejections = a.rejections || 1;
+          a.retryAt = retrySlot(nextHour(a.rejectedAt), this.store.now());
+        }
+      });
+      return this.read<Account>(ACCOUNT);
+    }
+  }
+  private blocked(a: Account) {
+    if (a.error === 'WEIXIN_SESSION_EXPIRED') return a.error;
+    if (!a.context) return 'WEIXIN_NEEDS_MESSAGE';
+    if (a.rejectedAt && this.store.now() >= dayDeadline(a.rejectedAt)) return '';
+    if ((a.retryAt || 0) > this.store.now()) return 'WEIXIN_CONTEXT_REJECTED';
+    return '';
+  }
   describe() {
     try {
-      const a = this.read<Account>(ACCOUNT);
+      const a = this.account();
       return {
         bound: !!a,
-        ready: !!a?.context && !a.error,
+        ready: !!a && !this.blocked(a),
         recipient: a ? `${a.user.slice(0, 4)}…${a.user.slice(-4)}` : '',
         lastInbound: a?.inbound || 0,
         lastPoll: a?.polled || 0,
         lastAccepted: a?.accepted || 0,
-        error: a?.error || (a && !a.context ? 'WEIXIN_NEEDS_MESSAGE' : ''),
+        error: a ? this.blocked(a) || (['WEIXIN_NETWORK_ERROR', 'WEIXIN_POLL_FAILED'].includes(a.error) ? a.error : '') : '',
+        nextRetryAt: a?.retryAt && a.rejectedAt && a.retryAt < dayDeadline(a.rejectedAt) ? a.retryAt : 0,
+        retryDeadline: a?.rejectedAt ? dayDeadline(a.rejectedAt) : 0,
       };
     } catch {
       return {
@@ -131,6 +205,8 @@ export class Weixin {
         lastPoll: 0,
         lastAccepted: 0,
         error: 'WEIXIN_LOCAL_STATE_INVALID',
+        nextRetryAt: 0,
+        retryDeadline: 0,
       };
     }
   }
@@ -335,6 +411,7 @@ export class Weixin {
       (data.errcode !== undefined && data.errcode !== 0)
     ) {
       this.update(account.binding, (a) => {
+        if (a.error === 'WEIXIN_SESSION_EXPIRED') return;
         a.error =
           data.ret === -14 || data.errcode === -14
             ? 'WEIXIN_SESSION_EXPIRED'
@@ -372,7 +449,7 @@ export class Weixin {
           continue;
         a.context = msg.context_token;
         a.inbound = msg.create_time_ms;
-        a.error = '';
+        if (a.error !== 'WEIXIN_SESSION_EXPIRED') a.error = '';
       }
       if (a.error === 'WEIXIN_POLL_FAILED' || a.error === 'WEIXIN_NETWORK_ERROR') a.error = '';
     });
@@ -406,38 +483,80 @@ export class Weixin {
     this.loop = undefined;
   }
   recoverDeliveries() {
-    const account = this.read<Account>(ACCOUNT);
+    const account = this.account();
     if (!account) return;
     const fingerprint = createHash('sha256').update(account.context).digest('hex');
     this.store.tx(() => {
       for (const d of this.store.all<Delivery>(
-        "SELECT * FROM deliveries WHERE destination=? AND status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE') AND attempt<5",
+        "SELECT * FROM deliveries WHERE mode IN ('immediate','digest_part') AND snapshot<>'' AND (status IN ('pending','retry_wait') OR (status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE')))",
+      )) {
+        const hourly = d.error === 'WEIXIN_CONTEXT_REJECTED' || !!(account.retryAt && account.rejectedAt && d.destination === this.destination && d.created < dayMidnight(account.rejectedAt));
+        // Derive the final task's deadline even if the worker was offline all night
+        // and no previous version ever wrote a marker. This does not delay first sends.
+        if (hourly || d.destination === this.destination) this.trackDay(d, hourly);
+        const deadline = this.deadline(d.id);
+        if (deadline && this.store.now() >= deadline) {
+          this.store.run("UPDATE deliveries SET status='cancelled',error='WEIXIN_DAY_EXPIRED' WHERE id=?", d.id);
+          continue;
+        }
+        if (d.destination !== this.destination) continue;
+        const hour = this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-hour:${d.id}`);
+        if (hour) {
+          // Explicit rejection replaces generic backoff; unrelated failures retain it.
+          const target = d.error === 'WEIXIN_CONTEXT_REJECTED' ? Number(hour.value) : Math.max(Number(hour.value), d.available);
+          const slot = retrySlot(Math.max(target, account.retryAt || 0), this.store.now());
+          this.store.run('UPDATE deliveries SET available=? WHERE id=?', slot, d.id);
+          this.store.run('UPDATE meta SET value=? WHERE key=?', String(slot), `weixin-hour:${d.id}`);
+        }
+      }
+      for (const d of this.store.all<Delivery>(
+        "SELECT * FROM deliveries WHERE destination=? AND status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE') AND attempt<CASE WHEN error='WEIXIN_CONTEXT_REJECTED' THEN 25 ELSE 5 END",
         this.destination,
       )) {
         const previous = this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-context:${d.id}`);
+        if (previous?.value === 'revoked' || this.blocked(account)) continue;
+        if (d.error === 'WEIXIN_CONTEXT_REJECTED') {
+          this.store.recoverContextDelivery(d, 25);
+          continue;
+        }
         // Legacy failures have no fingerprint. Fence them at observation time and
         // require a subsequent inbound context, rather than guessing which was used.
         if (!previous) {
           this.store.run('INSERT INTO meta VALUES (?,?)', `weixin-context:${d.id}`, fingerprint);
           continue;
         }
-        if (previous.value !== 'revoked' && account.context && !account.error && previous.value !== fingerprint)
+        if (previous.value !== fingerprint)
           this.store.recoverContextDelivery(d);
       }
       this.store.run("DELETE FROM meta WHERE key LIKE 'weixin-context:%' AND NOT EXISTS(SELECT 1 FROM deliveries d WHERE 'weixin-context:' || d.id=meta.key AND d.status NOT IN ('sent','cancelled'))");
     });
   }
+  private deadline(id: string) {
+    return Number(this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-deadline:${id}`)?.value || 0);
+  }
+  private trackDay(d: Delivery, hourly: boolean) {
+    this.store.run('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', `weixin-deadline:${d.id}`, String(dayDeadline(d.created)));
+    if (hourly) this.store.run('INSERT OR IGNORE INTO meta VALUES (?,?)', `weixin-hour:${d.id}`, String(nextHour(d.created)));
+  }
   async send(text: string, uuid: string, expected = this.destination): Promise<SendResult> {
     this.enabled();
-    const account = this.read<Account>(ACCOUNT);
+    const account = this.account();
     if (!account || expected !== this.destination)
       return { status: 'failed', code: 'WEIXIN_DESTINATION_CHANGED' };
     this.store.run("INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE meta.value<>'revoked'",
       `weixin-context:${uuid}`, createHash('sha256').update(account.context).digest('hex'));
     if (this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-context:${uuid}`)?.value === 'revoked')
       return { status: 'failed', code: 'DELIVERY_AUTHORIZATION_REVOKED' };
-    if (!account.context || account.error)
-      return { status: 'failed', code: account.error || 'WEIXIN_NEEDS_MESSAGE' };
+    const delivery = this.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', uuid);
+    if (delivery && ['immediate', 'digest_part'].includes(delivery.mode)) this.trackDay(delivery, false);
+    if (delivery && (delivery.error === 'WEIXIN_CONTEXT_REJECTED' || this.blocked(account))) this.trackDay(delivery, !!account.retryAt);
+    const deadline = this.deadline(uuid);
+    if (deadline && this.store.now() >= deadline) return { status: 'failed', code: 'WEIXIN_DAY_EXPIRED' };
+    const hour = this.store.get<{ value: string }>('SELECT value FROM meta WHERE key=?', `weixin-hour:${uuid}`);
+    if (hour && (this.store.now() < Number(hour.value) || this.store.now() >= Number(hour.value) + 60_000))
+      return { status: 'failed', code: 'WEIXIN_CONTEXT_REJECTED' };
+    const blocked = this.blocked(account);
+    if (blocked) return { status: 'failed', code: blocked };
     if (!text.trim() || Array.from(text).length > 4000)
       return { status: 'failed', code: 'WEIXIN_MESSAGE_TOO_LONG' };
     try {
@@ -469,6 +588,12 @@ export class Weixin {
       if (accepted && (data.errcode === undefined || data.errcode === 0)) {
         this.update(account.binding, (a) => {
           a.accepted = this.store.now();
+          // An older successful request cannot erase a newer account rejection.
+          if (a.rejectedAt === account.rejectedAt && a.rejections === account.rejections) {
+            a.retryAt = 0;
+            a.rejections = 0;
+            if (a.error !== 'WEIXIN_SESSION_EXPIRED') a.error = '';
+          }
         });
         return { status: 'sent' };
       }
@@ -480,9 +605,18 @@ export class Weixin {
             : 'WEIXIN_SEND_REJECTED';
       if (code !== 'WEIXIN_SEND_REJECTED')
         this.update(account.binding, (a) => {
-          // A fresh inbound message may have arrived while this old-context send was in flight.
-          if (a.context === account.context) a.error = code;
+          if (code === 'WEIXIN_CONTEXT_REJECTED') {
+            a.rejections = (a.rejections || 0) + 1;
+            a.rejectedAt = this.store.now();
+            a.retryPolicy = RETRY_POLICY;
+            a.retryAt = nextHour(a.rejectedAt);
+            if (a.error !== 'WEIXIN_SESSION_EXPIRED') a.error = code;
+          } else a.error = code;
         });
+      if (code === 'WEIXIN_CONTEXT_REJECTED' && delivery) {
+        this.trackDay(delivery, true);
+        this.store.run('UPDATE meta SET value=? WHERE key=?', String(nextHour(this.store.now())), `weixin-hour:${uuid}`);
+      }
       const explicitError =
         (typeof data.ret === 'number' && data.ret !== 0) ||
         (typeof data.errcode === 'number' && data.errcode !== 0);

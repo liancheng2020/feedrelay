@@ -9,6 +9,7 @@ export interface WeixinStatus {
   lastPoll: number;
   lastAccepted: number;
   error: string;
+  nextRetryAt?: number;
 }
 interface Pair {
   id: string;
@@ -31,7 +32,7 @@ let active = true,
   timer: ReturnType<typeof setTimeout> | undefined;
 const messages: Record<string, string> = {
   WEIXIN_NEEDS_MESSAGE: '已绑定，请向 ClawBot 发一条新消息；有效上下文更新后，仍有效且未达重试上限的任务自动恢复。',
-  WEIXIN_CONTEXT_REJECTED: '微信拒绝了当前发送上下文。请向机器人发一条新消息；仍有效且未达重试上限的任务自动恢复，发送结果不确定的记录仍需人工核查。',
+  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送，可能上下文或发送限制。按北京时间每小时整点重试，包含最终投递任务创建当日24:00的最后一轮，00:01过期；新消息不会提前重试，仍受授权及每日额度限制。不确定结果需人工核查。',
   WEIXIN_SESSION_EXPIRED: '微信登录已失效，需要重新扫码绑定。',
   WEIXIN_NETWORK_ERROR: '暂时无法连接微信服务。',
   WEIXIN_POLL_FAILED: '微信连接异常，正在等待恢复。',
@@ -114,10 +115,13 @@ onUnmounted(() => {
     <p v-if="value.lastAccepted" class="muted">
       最近接口接受 {{ new Date(value.lastAccepted).toLocaleString() }}（不代表已读）
     </p>
-    <p v-if="value.error" class="alert">
+    <p v-if="value.error" class="alert channel-notice">
       {{ messages[value.error] || '微信连接暂不可用，请检查后重试。' }}
+      <span v-if="value.error === 'WEIXIN_CONTEXT_REJECTED' && (value.nextRetryAt || 0) > Date.now()">下次自动重试（北京时间）：{{ new Date(value.nextRetryAt || 0).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) }}（含任务创建当日24:00最后一轮）</span>
+      <span v-else-if="value.error === 'WEIXIN_CONTEXT_REJECTED' && !value.nextRetryAt">当日已无可用整点，旧任务00:01过期，不再补发。</span>
     </p>
-    <p class="muted">仅保存绑定人的发送上下文，不处理聊天指令。长时间不互动的自动推送仍待验证。</p>
+    <p v-if="value.ready && value.nextRetryAt" class="muted">微信整点重试窗口内，符合条件的当日任务待后台调度（仍受授权及额度限制）。</p>
+    <p class="muted">仅保存绑定人的发送上下文，不处理聊天指令。微信无法保证长期无人值守推送。</p>
     <template v-if="!pair">
       <label class="check"
         ><input v-model="consent" type="checkbox" /><span

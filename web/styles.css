@@ -886,6 +886,15 @@ label select {
   border: 0;
   background: transparent;
 }
+.alert.channel-notice {
+  display: block;
+}
+.channel-notice > span,
+.delivery-limit {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .alert.success {
   background: #eff8f2;
   border-color: #d0e4d6;

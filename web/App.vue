@@ -69,6 +69,7 @@ interface Item {
   status?: string;
   pushStatus?: string;
   error?: string;
+  attempt?: number;
   resolution?: string;
   summaryStatus?: string;
   summaryError?: string;
@@ -178,7 +179,7 @@ interface Digest {
   cutoff: number;
   total_parts: number;
   members: number;
-  parts: { id: string; item_id: string; status: string; error: string; resolution: string }[];
+  parts: { id: string; item_id: string; status: string; error: string; resolution: string; attempt?: number }[];
 }
 const digests = ref<Digest[]>([]),
   transfer = ref('');
@@ -242,7 +243,8 @@ const errors: Record<string, string> = {
   WEIXIN_INVALID_PAIR_CODE: '请填写手机微信显示的4至8位数字配对码。',
   WEIXIN_BINDING_EXISTS: '微信提示已存在绑定，但没有返回新凭证。请检查微信授权后重新扫码。',
   WEIXIN_LOCAL_STATE_INVALID: '本机微信绑定信息无法解密，请解除后重新扫码。',
-  WEIXIN_CONTEXT_REJECTED: '请给机器人发一条新消息；有效上下文更新后，仍有效且未达重试上限的任务自动恢复。结果不确定的记录仍需人工核查。',
+  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送，可能上下文或发送限制。按北京时间每小时整点重试，包含最终投递任务创建当日24:00的最后一轮，00:01过期；新消息不会提前重试，仍受授权及每日额度限制。不确定结果需人工核查。',
+  WEIXIN_DAY_EXPIRED: '已过任务创建当日24:00的最后执行窗口（北京时间00:01），已取消，不再补发。',
   WEIXIN_NEEDS_MESSAGE: '请给机器人发一条新消息，符合条件的待发任务将自动恢复。',
   WEIXIN_SESSION_EXPIRED: '微信登录已过期，请重新扫码。',
   WEIXIN_RATE_LIMITED: '微信接口限流，将按队列有限重试。',
@@ -870,6 +872,12 @@ onUnmounted(() => {
         ><button class="icon" aria-label="关闭错误" @click="error = ''"><X :size="16" /></button>
       </div>
       <p v-if="notice" class="alert success" role="status"><Check :size="17" />{{ notice }}</p>
+      <p v-if="['updates', 'digests'].includes(view) && overview?.connections.channel === 'weixin' && (!overview.connections.weixin.ready || overview.connections.weixin.nextRetryAt)" class="alert channel-notice" role="status">
+        <template v-if="!overview.connections.weixin.ready">通道暂停：{{ overview.connections.weixin.error ? explain(overview.connections.weixin.error) : '请先扫码绑定微信。' }}</template>
+        <template v-else>微信整点重试窗口内，符合条件的当日任务待后台调度（仍受授权及额度限制）。</template>
+        <span v-if="overview.connections.weixin.error === 'WEIXIN_CONTEXT_REJECTED' && (overview.connections.weixin.nextRetryAt || 0) > Date.now()">下次自动重试（北京时间）：{{ new Date(overview.connections.weixin.nextRetryAt || 0).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) }}（含任务创建当日24:00最后一轮）</span>
+        <span v-else-if="overview.connections.weixin.error === 'WEIXIN_CONTEXT_REJECTED' && !overview.connections.weixin.nextRetryAt">当日已无可用整点，旧任务00:01过期，不再补发。</span>
+      </p>
       <template v-if="view === 'updates'">
         <section class="metrics" aria-label="投递概况">
           <div>
@@ -947,6 +955,7 @@ onUnmounted(() => {
                   <span class="badge" :class="item.status"
                     :title="item.status === 'sent' ? '推送接口已确认接受，不代表已读' : item.error ? explain(item.error) : ''"
                     >{{ deliveryLabels[item.pushStatus || 'unpublished'] }}</span>
+                  <small v-if="item.error === 'WEIXIN_CONTEXT_REJECTED' || item.error === 'WEIXIN_DAY_EXPIRED'" class="delivery-limit">{{ explain(item.error) }}</small>
                 </td>
                 <td class="update-time" data-label="时间">
                   <time>{{ time(item.received || item.published || item.discovered) }}</time>
@@ -1059,6 +1068,7 @@ onUnmounted(() => {
               <div>
                 <h2>{{ digestDate(batch) }}</h2>
                 <p class="digest-meta">{{ batch.slot.startsWith('aihot:') ? 'AIHOT AI 日报' : `订阅汇总 · ${batch.members} 条内容` }}<span v-if="batch.total_parts > 1"> · 共 {{ batch.total_parts }} 部分</span></p>
+                <small v-if="batch.parts.length === 1 && batch.parts[0].error" class="delivery-limit">{{ explain(batch.parts[0].error) }}</small>
               </div>
               <div class="digest-entry-status">
               <span v-if="!batch.total_parts" class="badge">无更新，不发送</span>

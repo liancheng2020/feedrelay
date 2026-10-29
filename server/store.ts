@@ -560,7 +560,7 @@ export class Store {
     }
     return item;
   }
-  claimDelivery(destination: string) {
+  claimDelivery(destination: string, contextAttemptLimit = 5) {
     return this.tx(() => {
       this.run(
         `UPDATE deliveries SET status='unknown',error='SEND_INTERRUPTED',lease=0,token='' WHERE status='sending' AND lease<=?`,
@@ -582,8 +582,10 @@ export class Store {
       )
         return;
       const d = this.get<Delivery>(
-        `SELECT * FROM deliveries WHERE status IN ('pending','retry_wait') AND snapshot<>'' AND error<>'SUMMARY_REQUIRED' AND available<=? AND attempt<5 ORDER BY created LIMIT 1`,
+        `SELECT * FROM deliveries WHERE destination=? AND status IN ('pending','retry_wait') AND snapshot<>'' AND error<>'SUMMARY_REQUIRED' AND available<=? AND attempt<CASE WHEN error='WEIXIN_CONTEXT_REJECTED' THEN ? ELSE 5 END ORDER BY created LIMIT 1`,
+        destination,
         this.now(),
+        contextAttemptLimit,
       );
       if (!d) return;
       const token = randomUUID();
@@ -605,7 +607,7 @@ export class Store {
       return this.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!;
     });
   }
-  recoverContextDelivery(d: Delivery) {
+  recoverContextDelivery(d: Delivery, contextAttemptLimit = 5) {
     if (!d.snapshot || d.part_id ||
       !this.get('SELECT 1 FROM items WHERE id=? AND expired=0', d.item_id)) return;
     const eligible = this.get("SELECT 1 FROM items WHERE id=? AND key LIKE 'test:%'", d.item_id) ||
@@ -617,7 +619,7 @@ export class Store {
     ))) return;
     // Preserve destination, identity, attempt budget and backoff. Summary
     // reconciliation still runs before the worker can claim the recovered task.
-    this.run("UPDATE deliveries SET status='retry_wait' WHERE id=? AND status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE') AND attempt<5", d.id);
+    this.run("UPDATE deliveries SET status='retry_wait' WHERE id=? AND status='failed' AND error IN ('WEIXIN_CONTEXT_REJECTED','WEIXIN_NEEDS_MESSAGE') AND attempt<CASE WHEN error='WEIXIN_CONTEXT_REJECTED' THEN ? ELSE 5 END", d.id, contextAttemptLimit);
   }
   blockContextRecovery(id: string) {
     this.run("INSERT INTO meta(key,value) VALUES (?,'revoked') ON CONFLICT(key) DO UPDATE SET value=excluded.value", `weixin-context:${id}`);
@@ -641,7 +643,8 @@ export class Store {
         )
       )
         return;
-      const status = outcome.status === 'retry_wait' && d.attempt >= 5 ? 'failed' : outcome.status;
+      const status = outcome.code === 'WEIXIN_DAY_EXPIRED' ? 'cancelled'
+        : outcome.status === 'retry_wait' && d.attempt >= 5 ? 'failed' : outcome.status;
       this.run(
         'UPDATE deliveries SET status=?,error=?,available=?,sent=?,lease=0,token=? WHERE id=?',
         status,

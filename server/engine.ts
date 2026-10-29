@@ -153,11 +153,14 @@ export class Engine {
       if (this.config.pushChannel === 'weixin' && !this.config.demo) this.weixin.recoverDeliveries();
       this.summaries.reconcile();
       if (!this.stopped) freezeDigest(this.store, this.destination);
+      // Final digest parts, not their waiting members, own the delivery day.
+      if (this.config.pushChannel === 'weixin' && !this.config.demo) this.weixin.recoverDeliveries();
       this.phase = 'sending';
       this.pulse();
       if (this.pushReady && !this.stopped)
         for (let n = 0; n < 5 && !this.stopped; n++) {
-          const d = this.store.claimDelivery(this.destination);
+          if (!this.pushReady) break;
+          const d = this.store.claimDelivery(this.destination, this.config.pushChannel === 'weixin' && !this.config.demo ? 25 : 5);
           if (!d) break;
           try {
             this.store.finishDelivery(d, await this.adapters.send(d.snapshot, d.id, d.destination));
@@ -165,6 +168,7 @@ export class Engine {
             this.store.finishDelivery(d, { status: 'unknown', code: 'SEND_UNCONFIRMED' });
           }
         }
+      if (this.config.pushChannel === 'weixin' && !this.config.demo) this.weixin.recoverDeliveries();
       if (!this.stopped) {
         this.summaries.schedule();
         if (!this.summaryTask) {
