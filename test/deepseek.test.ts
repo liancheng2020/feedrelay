@@ -7,10 +7,70 @@ import {
   chunkText,
   parseModelBrief,
   resolveCaptionReferences,
+  BriefValidationError,
 } from '../server/deepseek.js';
 import { SummaryService } from '../server/summary.js';
 import { fixture, incoming } from './helpers.js';
 import { parseCaption } from '../server/captions.js';
+
+test('DS-06: exact field limits stay strict and diagnostics contain no source or generated text', () => {
+  const point = {title:'标题', summary:'文'.repeat(400), evidence:{quote:'原文',locator:'段落1'}};
+  const value = {summary:{overview:{oneLiner:'概括'},keyPoints:[point]}};
+  assert.equal(validateBrief(value, '原文').points[0].text.length,400);
+  for (const [field,max] of [['title',100],['summary',400]] as const) {
+    assert.throws(() => validateBrief({summary:{...value.summary,keyPoints:[{...point,[field]:'私'.repeat(max+1)}]}},'原文'), (error:unknown) => {
+      assert.ok(error instanceof BriefValidationError);
+      assert.equal(error.field,`keyPoints[0].${field}`);
+      assert.match(error.constraint,new RegExp(String(max)));
+      assert.doesNotMatch(JSON.stringify(error),/私/);
+      return true;
+    });
+  }
+  assert.throws(() => validateBrief(value,'未提供相关证据'),/SUMMARY_UNSUPPORTED_QUOTE/);
+});
+
+test('DS-07: oversized point repair names the offending field and still validates evidence', async (t) => {
+  const f = fixture(t), source = f.source('email');
+  const adapter = createDeepSeekAdapter({...f.config,demo:false,deepseek:{enabled:true,apiKey:'synthetic-not-a-key',model:'contract-model',inputPrice:1,outputPrice:2}});
+  let calls = 0;
+  const transport:typeof fetch = async (_url,init) => {
+    calls++;
+    const user = JSON.parse(String(init?.body)).messages[1].content as string;
+    assert.match(user, calls === 1 ? /每个summary控制在180个字符以内/ : /每个summary控制在120个字符以内/);
+    if (calls === 2) {
+      assert.match(user,/keyPoints\[0\]\.summary/);
+      assert.match(user,/最多400个字符/);
+    }
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({overview:{oneLiner:'概括'},keyPoints:[{title:'重点',summary:'文'.repeat(calls===1?439:300),evidence:{quote:'可核查原文',locator:'段落1'}}]})}}],usage:{prompt_tokens:100,completion_tokens:100}});
+  };
+  const service = new SummaryService(f.store,adapter,'demo',transport);
+  service.configure({enabled:true,maxCalls:2,maxCostCny:1,confirmed:true});
+  service.authorize(source.id,'manual',false,true);
+  const item = f.store.put({...incoming('length-repair'),kind:'email',text:'可核查原文'},[source],true,'demo');
+  service.enqueue(item.id);
+  await service.cycle('demo');
+  assert.equal(service.list(item.id)[0].status,'succeeded');
+  assert.equal(service.describe().calls,2);
+  assert.equal(calls,2);
+});
+
+test('DS-08: repeated oversized responses fail closed with a safe field diagnostic and two billed calls', async (t) => {
+  const f = fixture(t), source = f.source('email');
+  const adapter = createDeepSeekAdapter({...f.config,demo:false,deepseek:{enabled:true,apiKey:'synthetic-not-a-key',model:'contract-model',inputPrice:1,outputPrice:2}});
+  const transport:typeof fetch = async () => Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({overview:{oneLiner:'概括'},keyPoints:[{title:'重点',summary:'私'.repeat(439),evidence:{quote:'敏感原文',locator:'段落1'}}]})}}],usage:{prompt_tokens:100,completion_tokens:100}});
+  const service = new SummaryService(f.store,adapter,'demo',transport);
+  service.configure({enabled:true,maxCalls:2,maxCostCny:1,confirmed:true});
+  service.authorize(source.id,'manual',true,true);
+  const item = f.store.put({...incoming('length-failure'),kind:'email',text:'敏感原文'},[source],true,'demo');
+  const id = service.enqueue(item.id);
+  await service.cycle('demo');
+  assert.equal(service.list(item.id)[0].error,'SUMMARY_INVALID_OUTPUT');
+  assert.equal(service.describe().calls,2);
+  const event = f.store.get('SELECT code FROM events WHERE action=? AND resource=?','summary_validation_failed',id)!;
+  assert.match(String(event.code),/keyPoints\[0\]\.summary/);
+  assert.doesNotMatch(String(event.code),/私|敏感原文/);
+  assert.equal(service.list(item.id)[0].output,null);
+});
 
 test('DS-05: selected passage IDs resolve to original text; unknown IDs never produce evidence', () => {
   const text = '[00:00] 第一段保留繁體原文。\n\n[01:20] 第二段不改写数字123。';

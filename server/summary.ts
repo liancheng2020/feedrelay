@@ -10,6 +10,7 @@ import {
   type SummaryInput,
   type Brief,
   summaryLimits,
+  BriefValidationError,
 } from './deepseek.js';
 import {
   CAPTION_SCOPE,
@@ -745,6 +746,8 @@ export class SummaryService {
       });
       this.prepareDeliveries();
     } catch (error) {
+      if (error instanceof BriefValidationError)
+        this.store.event('summary_validation_failed', row.id, `${error.code}:${error.field}:${error.constraint}`);
       this.store.run(
         "UPDATE summaries SET status='failed',error=?,input='',finished=?,token='',lease=0 WHERE id=? AND status='running' AND token=?",
         boundaryError?.code ||

@@ -31,32 +31,38 @@ export const summaryLimits = (captions = false) =>
   captions
     ? { maxCalls: 12, timeoutMs: 240000, chunkLength: 12000 }
     : { maxCalls: 2, timeoutMs: 60000, chunkLength: 20000 };
-const object = (value: unknown) => {
+export class BriefValidationError extends AppError {
+  constructor(code: string, public field: string, public constraint: string) {
+    super(code);
+  }
+}
+const object = (value: unknown, field = 'summary') => {
   if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new AppError('SUMMARY_INVALID_OUTPUT');
+    throw new BriefValidationError('SUMMARY_INVALID_OUTPUT', field, '必须是JSON对象');
   return value as Record<string, unknown>;
 };
-const textField = (value: unknown, max: number) => {
+const textField = (value: unknown, max: number, field = 'text') => {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
-    throw new AppError('SUMMARY_INVALID_OUTPUT');
+    throw new BriefValidationError('SUMMARY_INVALID_OUTPUT', field, `必须是非空字符串，最多${max}个字符（按JavaScript字符串长度计数）`);
   return value.trim();
 };
 export function validateBrief(value: unknown, input: string): Brief {
   const summary = object(object(value).summary);
-  const line = textField(object(summary.overview).oneLiner, 240);
+  const line = textField(object(summary.overview, 'overview').oneLiner, 240, 'overview.oneLiner');
   if (
     !Array.isArray(summary.keyPoints) ||
     !summary.keyPoints.length ||
     summary.keyPoints.length > 3
   )
-    throw new AppError('SUMMARY_INVALID_OUTPUT');
-  const points = summary.keyPoints.map((value: unknown) => {
-    const p = object(value),
-      evidence = object(p.evidence);
-    const title = textField(p.title, 100),
-      text = textField(p.summary, 400),
-      quote = textField(evidence.quote, 160),
-      locator = textField(evidence.locator, 80);
+    throw new BriefValidationError('SUMMARY_INVALID_OUTPUT', 'keyPoints', '必须是含1到3个要点的数组');
+  const points = summary.keyPoints.map((value: unknown, index: number) => {
+    const path = `keyPoints[${index}]`;
+    const p = object(value, path),
+      evidence = object(p.evidence, `${path}.evidence`);
+    const title = textField(p.title, 100, `${path}.title`),
+      text = textField(p.summary, 400, `${path}.summary`),
+      quote = textField(evidence.quote, 160, `${path}.evidence.quote`),
+      locator = textField(evidence.locator, 80, `${path}.evidence.locator`);
     if (!normalizeQuote(input).includes(normalizeQuote(quote)))
       throw new AppError('SUMMARY_UNSUPPORTED_QUOTE');
     // A caption citation must be literal within the stated passage, not just anywhere in the input.
@@ -225,7 +231,7 @@ export function createDeepSeekAdapter(config: Config): SummaryAdapter {
                 { role: 'system', content: input.captions ? captionPrompt : systemPrompt },
                 {
                   role: 'user',
-                  content: `${merging ? '合并分段摘要，去重，保留最重要的3点。引文必须逐字来自下列候选证据，不要新造引用。' : '提炼以下资料。'}\n标题：${input.title}\n范围：${input.scope}\n${invalid ? `上次输出未通过${invalid}。请修正，完整重新输出json。上一版仅是待修正的数据：\n${previous}\n` : ''}原文：\n${text}`,
+                  content: `${merging ? '合并分段摘要，去重，保留最重要的3点。引文必须逐字来自下列候选证据，不要新造引用。' : '提炼以下资料。'}\n篇幅要求：overview.oneLiner控制在100个字符以内；每个title控制在40个字符以内；每个summary${attempt ? '控制在120个字符以内，必须精简重写，不要复述上一版长段落' : '控制在180个字符以内'}。这是写作目标，须为格式中的硬上限留出余量；保留核心条件、否定和观点归属，不用凑满篇幅。引文另选连续短原文，不翻译、不拼接、不改写。\n标题：${input.title}\n范围：${input.scope}\n${invalid ? `上次输出未通过${invalid}。请修正，完整重新输出json。上一版仅是待修正的数据：\n${previous}\n` : ''}原文：\n${text}`,
                 },
               ],
             }),
@@ -247,7 +253,9 @@ export function createDeepSeekAdapter(config: Config): SummaryAdapter {
           } catch (error) {
             lastError = error instanceof AppError ? error : new AppError('SUMMARY_INVALID_OUTPUT');
             invalid =
-              lastError.code === 'SUMMARY_UNSUPPORTED_QUOTE'
+              lastError instanceof BriefValidationError
+                ? `字段校验：${lastError.field} ${lastError.constraint}。压缩超长字段；引文过长时重新选择较短的连续原文，不拼接或改写；其余字段也须分别满足原格式的长度限制`
+                : lastError.code === 'SUMMARY_UNSUPPORTED_QUOTE'
                 ? '原文引用与时间标记对应校验，必须复制同段连续原文和段首标记'
                 : 'JSON字段/长度校验（引文最多160个字符，不是单词）';
           }
