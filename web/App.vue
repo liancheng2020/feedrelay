@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { DateTime } from 'luxon';
+import DigestCalendar from './DigestCalendar.vue';
 import WeixinConnection, { type WeixinStatus } from './WeixinConnection.vue';
 import TransferDialog from './TransferDialog.vue';
 import SummarySettings, { type SummaryConfig } from './SummarySettings.vue';
@@ -183,6 +185,29 @@ interface Digest {
 }
 const digests = ref<Digest[]>([]),
   transfer = ref('');
+const digestMonth = ref(DateTime.now().setZone('Asia/Shanghai').toFormat('yyyy-MM'));
+const digestSelected = ref('');
+const digestDay = (batch: Digest) => DateTime.fromMillis(batch.cutoff, {zone:batch.timezone}).toISODate()!;
+const selectedDigests = computed(() => digests.value.filter(batch => digestDay(batch) === digestSelected.value));
+let digestRequest = 0;
+async function loadDigests(month = digestMonth.value) {
+  const request = ++digestRequest;
+  const result = await api<{ items: Digest[] }>(
+    `/digests?view=calendar&month=${month}`,
+  );
+  if (request !== digestRequest) return;
+  digests.value = result.items;
+  digestMonth.value = month;
+  if (!digestSelected.value.startsWith(month)) {
+    const today = DateTime.now().setZone('Asia/Shanghai').toISODate()!;
+    digestSelected.value = today.startsWith(month) ? today : result.items[0] ? digestDay(result.items[0]) : `${month}-01`;
+  }
+}
+async function showTodayDigest() {
+  const today = DateTime.now().setZone('Asia/Shanghai').toISODate()!;
+  await loadDigests(today.slice(0,7));
+  digestSelected.value = today;
+}
 const summaryConfig = ref<SummaryConfig | null>(null);
 const pushLabel = computed(() =>
   overview.value?.connections.channel === 'weixin' ? '微信' : '飞书',
@@ -412,7 +437,7 @@ async function load() {
   overview.value = o;
   sources.value = await api<Source[]>('/sources');
   jobs.value = await api<Job[]>('/jobs');
-  digests.value = await api<Digest[]>('/digests');
+  await loadDigests();
   aihot.value = await api<typeof aihot.value>('/aihot');
   summaryConfig.value = await api<SummaryConfig>('/summaries/settings');
   const result = await api<{ items: Item[]; total: number; page: number }>(
@@ -1055,19 +1080,20 @@ onUnmounted(() => {
             <button class="quiet" @click="switchView('settings')"><Settings :size="16" />调整时间</button>
           </div>
         </section>
-        <div v-if="!digests.length" class="empty">
-          <CalendarDays :size="34" />
-          <h2>暂无日报批次</h2>
-          <p>{{ aihot.enabled ? 'AIHOT 日报将在每天上午 10 点推送。' : '开启自动推送，接收 AIHOT 每日 AI 资讯。' }}</p>
-        </div>
-        <section class="digest-list">
-          <article v-for="batch in digests" :key="batch.id">
+        <div class="daily-workspace">
+        <DigestCalendar :month="digestMonth" :selected="digestSelected" :batches="digests" :busy="busy"
+          @month="month => act(() => loadDigests(month))" @select="date => digestSelected = date"
+          @today="act(showTodayDigest)" />
+        <section class="digest-list daily-selection" aria-label="当日日报">
+          <header class="daily-selection-header"><div><p>日报归档</p><h2>{{ digestSelected.replaceAll('-', '/') }}</h2></div><span class="muted">{{ selectedDigests.length }} 份日报</span></header>
+          <div v-if="!selectedDigests.length" class="daily-empty"><CalendarDays :size="28" /><h3>当天暂无日报</h3><p>{{ digests.length ? '选择其他日期查看' : '本月尚无日报记录' }}</p></div>
+          <article v-for="batch in selectedDigests" :key="batch.id">
             <component :is="batch.parts.length ? 'a' : 'div'" class="digest-entry"
               :href="batch.parts.length ? `#items/${batch.parts[0].item_id}` : undefined"
               :aria-label="batch.parts.length ? `查看 ${digestDate(batch)} ${batch.slot.startsWith('aihot:') ? 'AIHOT AI 日报' : '订阅汇总'}` : undefined">
               <div>
-                <h2>{{ digestDate(batch) }}</h2>
-                <p class="digest-meta">{{ batch.slot.startsWith('aihot:') ? 'AIHOT AI 日报' : `订阅汇总 · ${batch.members} 条内容` }}<span v-if="batch.total_parts > 1"> · 共 {{ batch.total_parts }} 部分</span></p>
+                <h2>{{ batch.slot.startsWith('aihot:') ? 'AIHOT AI 日报' : '订阅汇总' }}</h2>
+                <p class="digest-meta">{{ batch.slot.startsWith('aihot:') ? '每日 AI 资讯' : `${batch.members} 条内容` }}<span v-if="batch.total_parts > 1"> · 共 {{ batch.total_parts }} 部分</span></p>
                 <small v-if="batch.parts.length === 1 && batch.parts[0].error" class="delivery-limit">{{ explain(batch.parts[0].error) }}</small>
               </div>
               <div class="digest-entry-status">
@@ -1089,6 +1115,7 @@ onUnmounted(() => {
             </template>
           </article>
         </section>
+        </div>
       </template>
       <template v-if="view === 'sources'">
         <div class="transfer-actions">

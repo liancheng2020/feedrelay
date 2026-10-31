@@ -17,7 +17,7 @@ import { Store, type Item, type Delivery, type Job } from './store.js';
 import { Engine } from './engine.js';
 import { normalizeSource } from './adapters.js';
 import { advanceDemo } from './demo.js';
-import { listDigests } from './digest.js';
+import { listDigests, listDigestArchive } from './digest.js';
 import { latestDelivery, pushStateSql } from './push-state.js';
 import { exportSources, previewImport, applyImport } from './portable.js';
 import { AdminAuth } from './auth.js';
@@ -239,7 +239,12 @@ export function createApp(store: Store, config: Config, engine: Engine) {
     ctx.body = applyImport(store, body.bundle, body.hash || '', body.confirmedPublic === true);
   });
   router.get('/api/digests', (ctx) => {
-    ctx.body = listDigests(store);
+    if (!['archive','calendar'].includes(String(ctx.query.view))) { ctx.body = listDigests(store); return; }
+    const month = ctx.query.month ?? '', page = Number(ctx.query.page ?? 1), pageSize = Number(ctx.query.pageSize ?? 10);
+    if (typeof month !== 'string' || (month !== '' && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) || !Number.isSafeInteger(page) || page < 1 || ![10,20,50].includes(pageSize))
+      throw new AppError('INVALID_DIGEST_QUERY');
+    if (ctx.query.view === 'calendar' && !month) throw new AppError('INVALID_DIGEST_QUERY');
+    ctx.body = listDigestArchive(store, month, ctx.query.view === 'calendar' ? 1 : page, ctx.query.view === 'calendar' ? Number.MAX_SAFE_INTEGER : pageSize);
   });
   router.get('/api/aihot', (ctx) => { ctx.body = engine.aihot.describe(); });
   router.put('/api/aihot', (ctx) => {

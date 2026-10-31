@@ -32,12 +32,13 @@ for (const width of [1440, 390]) {
       data.items[2] = { ...data.items[2], status: 'cancelled', pushStatus: 'attention', error: 'WEIXIN_DAY_EXPIRED' };
       await route.fulfill({ response, json: data });
     });
-    await page.route('**/api/digests', async route => {
+    await page.route('**/api/digests?*', async route => {
       const response = await route.fetch();
-      const batches = await response.json();
+      const archive = await response.json();
+      const batches = archive.items;
       const batch = batches.find((b: { parts: unknown[] }) => b.parts.length);
-      await route.fulfill({ response, json: [{ ...batch, slot: 'aihot:2026-10-29', total_parts: 1,
-        parts: [{ ...batch.parts[0], status: 'failed', attempt: 5, error: 'WEIXIN_CONTEXT_REJECTED' }] }] });
+      await route.fulfill({ response, json: { ...archive, total: 1, page: 1, items: [{ ...batch, cutoff: now, timezone: 'Asia/Shanghai', slot: 'aihot:2026-10-29', total_parts: 1,
+        parts: [{ ...batch.parts[0], status: 'failed', attempt: 5, error: 'WEIXIN_CONTEXT_REJECTED' }] }] } });
     });
     for (const view of ['updates', 'digests', 'settings']) {
       await page.goto(`/#${view}`);
@@ -65,6 +66,7 @@ for (const width of [1440, 390]) {
     due = true;
     for (const view of ['updates', 'digests', 'settings']) {
       await page.goto(`/#${view}`);
+      await page.getByRole('button', { name: '刷新', exact: true }).click();
       const notice = view === 'settings' ? page.getByRole('region', { name: '运行检查' }) : page.getByRole('status');
       await expect(notice).toContainText('待后台调度');
       await expect(notice).not.toContainText('下次自动重试（北京时间）：');

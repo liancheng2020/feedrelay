@@ -122,9 +122,19 @@ export function freezeDigest(store: Store, destination: string) {
     return id;
   });
 }
-export function listDigests(store: Store) {
-  return store
-    .all<DigestBatch>('SELECT * FROM digest_batches ORDER BY created DESC,rowid DESC LIMIT 30')
+export function listDigestArchive(store: Store, month = '', page = 1, pageSize = 10) {
+  const batches = store.all<DigestBatch>('SELECT * FROM digest_batches ORDER BY cutoff DESC,created DESC,rowid DESC');
+  const monthOf = (batch: DigestBatch) => DateTime.fromMillis(batch.cutoff, { zone: batch.timezone }).toFormat('yyyy-MM');
+  const months = [...new Set(batches.map(monthOf))].sort().reverse();
+  const filtered = month ? batches.filter(batch => monthOf(batch) === month) : batches;
+  const total = filtered.length;
+  page = Math.min(page, Math.max(1, Math.ceil(total / pageSize)));
+  return { items: listDigests(store, filtered.slice((page - 1) * pageSize, page * pageSize)), months, total, page, pageSize };
+}
+export function listDigests(store: Store, batches?: DigestBatch[]) {
+  return (
+    // Legacy callers retain the original bounded response; archive callers select a page first.
+    batches ?? store.all<DigestBatch>('SELECT * FROM digest_batches ORDER BY created DESC,rowid DESC LIMIT 30'))
     .map((batch) => ({
       id: batch.id,
       slot: batch.slot,

@@ -3,8 +3,34 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { Store, type Delivery } from '../server/store.js';
-import { digestSlot, freezeDigest, listDigests } from '../server/digest.js';
+import { digestSlot, freezeDigest, listDigests, listDigestArchive } from '../server/digest.js';
 import { fixture, incoming } from './helpers.js';
+
+test('archive pages beyond legacy 30 and filters by each batch local calendar month', t => {
+  const f = fixture(t);
+  for (let n = 0; n < 65; n++) {
+    const at = Date.UTC(2026, 9, 31 - n, 2);
+    f.store.run('INSERT INTO digest_batches VALUES (?,?,?,?,?,?,?)', `archive-${n}`, `archive:${n}`, 'Asia/Shanghai', at, at, 'demo', 0);
+  }
+  const first = listDigestArchive(f.store);
+  assert.equal(first.items.length, 10);
+  assert.equal(first.total, 65);
+  const last = listDigestArchive(f.store, '', 99);
+  assert.equal(last.page, 7);
+  assert.equal(last.items.length, 5);
+  assert.notEqual(last.items[0].id, first.items[0].id);
+  const october = listDigestArchive(f.store, '2026-10', 1, 50);
+  assert.equal(october.total, 31);
+  assert.equal(october.items.length, 31);
+  assert.equal(listDigests(f.store).length, 30);
+  assert.deepEqual(listDigestArchive(f.store, '2020-01').items, []);
+  assert.equal(listDigestArchive(f.store, '2020-01', 9).page, 1);
+  const boundary = Date.parse('2026-10-31T17:00:00Z');
+  f.store.run('INSERT INTO digest_batches VALUES (?,?,?,?,?,?,?)', 'boundary', 'boundary', 'Asia/Shanghai', boundary, boundary, 'demo', 0);
+  assert.equal(listDigestArchive(f.store, '2026-11').items[0].id, 'boundary');
+  for (let n = 0; n < 30; n++) f.store.run('INSERT INTO digest_batches VALUES (?,?,?,?,?,?,?)', `extra-${n}`, `extra:${n}`, 'Asia/Shanghai', Date.UTC(2026,9,20,3), Date.UTC(2026,9,20,3), 'demo', 0);
+  assert.equal(listDigestArchive(f.store, '2026-10', 1, Number.MAX_SAFE_INTEGER).items.length, 61);
+});
 
 function setup(t: Parameters<typeof fixture>[0]) {
   const f = fixture(t);
