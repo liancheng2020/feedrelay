@@ -268,7 +268,8 @@ const errors: Record<string, string> = {
   WEIXIN_INVALID_PAIR_CODE: '请填写手机微信显示的4至8位数字配对码。',
   WEIXIN_BINDING_EXISTS: '微信提示已存在绑定，但没有返回新凭证。请检查微信授权后重新扫码。',
   WEIXIN_LOCAL_STATE_INVALID: '本机微信绑定信息无法解密，请解除后重新扫码。',
-  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送，可能上下文或发送限制。按北京时间每小时整点重试，包含最终投递任务创建当日24:00的最后一轮，00:01过期；新消息不会提前重试，仍受授权及每日额度限制。不确定结果需人工核查。',
+  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送。未达当天连续3次失败上限时每小时整点重试，达到上限当天停止；结果未知需人工核查。',
+  WEIXIN_DAILY_FAILURE_LIMIT: '微信当天已连续失败3次，今天停止自动推送；次日仅发送新任务，不补发已停止的旧任务。',
   WEIXIN_DAY_EXPIRED: '已过任务创建当日24:00的最后执行窗口（北京时间00:01），已取消，不再补发。',
   WEIXIN_NEEDS_MESSAGE: '请给机器人发一条新消息，符合条件的待发任务将自动恢复。',
   WEIXIN_SESSION_EXPIRED: '微信登录已过期，请重新扫码。',
@@ -980,7 +981,7 @@ onUnmounted(() => {
                   <span class="badge" :class="item.status"
                     :title="item.status === 'sent' ? '推送接口已确认接受，不代表已读' : item.error ? explain(item.error) : ''"
                     >{{ deliveryLabels[item.pushStatus || 'unpublished'] }}</span>
-                  <small v-if="item.error === 'WEIXIN_CONTEXT_REJECTED' || item.error === 'WEIXIN_DAY_EXPIRED'" class="delivery-limit">{{ explain(item.error) }}</small>
+                  <small v-if="item.error && ['WEIXIN_CONTEXT_REJECTED','WEIXIN_DAY_EXPIRED','WEIXIN_DAILY_FAILURE_LIMIT'].includes(item.error)" class="delivery-limit">{{ explain(item.error) }}</small>
                 </td>
                 <td class="update-time" data-label="时间">
                   <time>{{ time(item.received || item.published || item.discovered) }}</time>

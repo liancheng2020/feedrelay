@@ -412,13 +412,13 @@ test('WX-09: live polling envelope can omit ret, but empty or malformed response
   await assert.rejects(f.service.pollUpdates(), /WEIXIN_INVALID_RESPONSE/);
 });
 
-test('AC1/3: hourly recovery exceeds five attempts with the same identity, then succeeds once', async t => {
+test('AC1/3: two hourly failures recover with the same identity, then succeed once', async t => {
   const f = setup(t);
   await f.bind();
   await f.inbound();
   const item = f.store.put(incoming(), [f.source()], true, f.service.destination);
   const read = () => f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
-  for (let n = 1; n <= 8; n++) {
+  for (let n = 1; n <= 2; n++) {
     const d = f.store.claimDelivery(f.service.destination, 24)!;
     assert.ok(d);
     f.send({ ret: -2 });
@@ -442,12 +442,201 @@ test('AC1/3: hourly recovery exceeds five attempts with the same identity, then 
   assert.equal(new Set(f.calls.filter(c => c.url.pathname.endsWith('sendmessage')).map(c => c.body.msg.client_id)).size, 1);
   const next = f.store.claimDelivery(f.service.destination, 24)!;
   assert.ok(next);
-  assert.equal(next.attempt, 9);
+  assert.equal(next.attempt, 3);
   f.send({ ret: 0 });
   f.store.finishDelivery(next, await f.service.send(next.snapshot, next.id));
   assert.equal(read().status, 'sent');
   f.service.recoverDeliveries();
   assert.equal(f.store.claimDelivery(f.service.destination, 24), undefined);
+  const sends = f.calls.filter(c => c.url.pathname.endsWith('sendmessage'));
+  assert.equal(sends.length, 3);
+  assert.equal(new Set(sends.map(c => c.body.msg.client_id)).size, 1);
+});
+
+const dailyFailureLimit = 'WEIXIN_DAILY_FAILURE_LIMIT';
+
+// Seed only synthetic historical receipts, including states produced by older versions.
+function dailyReceipt(
+  f: ReturnType<typeof setup>, source: ReturnType<ReturnType<typeof setup>['source']>,
+  id: string, status: 'failed' | 'sent' | 'unknown' | 'retry_wait',
+  destination = f.service.destination, at = f.now(),
+) {
+  const item = f.store.put(incoming(`youtube:daily-${id}`, 0), [source], true, destination);
+  const d = f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
+  const code = status === 'failed' ? 'WEIXIN_CONTEXT_REJECTED' : status === 'unknown' ? 'WEIXIN_SEND_UNCONFIRMED' : '';
+  f.store.run('UPDATE deliveries SET status=?,attempt=1,error=? WHERE id=?', status, code, d.id);
+  f.store.run('INSERT INTO attempts(id,delivery_id,n,day,at,status,code) VALUES (?,?,?,?,?,?,?)',
+    `daily-${id}`, d.id, 1, new Date(at + 8 * 3600000).toISOString().slice(0, 10), at, status, code);
+  return f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!;
+}
+
+function assertDailyPaused(service: Weixin) {
+  const state = service.describe();
+  assert.equal(state.error, dailyFailureLimit);
+  assert.equal(state.ready, false);
+  assert.equal(state.nextRetryAt, 0);
+}
+
+test('AC-DAY-01: third explicit failure stops retries and persists through inbound and reopened DB', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const source = f.source();
+  const item = f.store.put(incoming(), [source], true, f.service.destination);
+  const original = f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!;
+  for (let n = 1; n <= 3; n++) {
+    const d = f.store.claimDelivery(f.service.destination, 25);
+    assert.ok(d); assert.equal(d.id, original.id); assert.equal(d.attempt, n);
+    f.send({ ret: -2 }); f.store.finishDelivery(d, await f.service.send(d.snapshot, d.id));
+    f.service.recoverDeliveries();
+    if (n < 3) { f.advance(3600000); f.service.recoverDeliveries(); }
+  }
+  assertDailyPaused(f.service);
+  const stopped = () => f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', original.id)!;
+  assert.equal(stopped().status, 'cancelled'); assert.equal(stopped().error, dailyFailureLimit);
+  assert.equal(f.store.get('SELECT count(*) n FROM attempts')!.n, 3);
+  const pause = f.store.all<{ key: string; value: string }>("SELECT * FROM meta WHERE key LIKE 'weixin-failure-pause:%'");
+  assert.equal(pause.length, 1);
+  f.advance(3600000); await f.inbound(f.now(), 'new-context-after-stop');
+  const reopened = new Store(f.dir, 'demo', f.now); t.after(() => reopened.close());
+  const restarted = new Weixin(reopened, f.config, f.request);
+  restarted.recoverDeliveries(); assertDailyPaused(restarted);
+  const calls = f.calls.length;
+  assert.equal((await restarted.send(original.snapshot, original.id)).code, dailyFailureLimit);
+  assert.equal(reopened.claimDelivery(restarted.destination, 25), undefined);
+  assert.equal(f.calls.length, calls);
+  assert.equal(stopped().status, 'cancelled');
+  assert.deepEqual(f.store.all("SELECT * FROM meta WHERE key LIKE 'weixin-failure-pause:%'"), pause);
+  const sends = f.calls.filter(c => c.url.pathname.endsWith('sendmessage'));
+  assert.equal(sends.length, 3);
+  assert.equal(new Set(sends.map(c => c.body.msg.client_id)).size, 1);
+});
+
+test('AC-DAY-02: failures accumulate across tasks, unknown and retry_wait neither count nor reset', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const source = f.source();
+  dailyReceipt(f, source, 'cross-1', 'failed');
+  dailyReceipt(f, source, 'cross-2', 'failed');
+  const unknown = dailyReceipt(f, source, 'cross-unknown', 'unknown');
+  dailyReceipt(f, source, 'cross-wait', 'retry_wait');
+  f.service.recoverDeliveries();
+  assert.equal(f.service.describe().ready, true);
+  dailyReceipt(f, source, 'cross-3', 'failed');
+  const calls = f.calls.length;
+  f.service.recoverDeliveries(); assertDailyPaused(f.service);
+  assert.deepEqual(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', unknown.id), unknown);
+  assert.equal(f.store.claimDelivery(f.service.destination, 25), undefined);
+  assert.equal(f.calls.length, calls);
+});
+
+test('AC-DAY-03: sent resets the streak; other destinations and previous Beijing days do not count', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const source = f.source();
+  for (let n = 0; n < 3; n++) dailyReceipt(f, source, `yesterday-${n}`, 'failed', f.service.destination, Date.parse('2026-10-15T15:59:59Z'));
+  for (let n = 0; n < 3; n++) dailyReceipt(f, source, `foreign-${n}`, 'failed', 'weixin:other-destination');
+  f.service.recoverDeliveries(); assert.equal(f.service.describe().ready, true);
+  for (const [n, status] of (['failed', 'failed', 'sent', 'failed', 'failed'] as const).entries()) {
+    dailyReceipt(f, source, `reset-${n}`, status);
+    f.service.recoverDeliveries(); assert.equal(f.service.describe().ready, true);
+  }
+  // A different destination's success cannot reset this destination's two failures.
+  dailyReceipt(f, source, 'foreign-sent', 'sent', 'weixin:other-destination');
+  dailyReceipt(f, source, 'reset-third', 'failed');
+  f.service.recoverDeliveries(); assertDailyPaused(f.service);
+});
+
+test('AC-DAY-04: stop cancels ready final immediate/digest parts and all explicit failures, not uncertain receipts', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const source = f.source();
+  const rows: { before: Delivery; cancel: boolean }[] = [];
+  for (const mode of ['immediate', 'digest_part'] as const) {
+    for (const status of ['pending', 'retry_wait', 'failed', 'unknown', 'sending', 'sent'] as const) {
+      const item = f.store.put(incoming(`youtube:stop-${mode}-${status}`), [source], true, f.service.destination);
+      f.store.run('UPDATE deliveries SET mode=?,status=?,error=? WHERE item_id=?', mode, status, status === 'failed' ? 'WEIXIN_SEND_REJECTED' : '', item.id);
+      rows.push({ before: f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!, cancel: ['pending', 'retry_wait', 'failed'].includes(status) });
+    }
+  }
+  for (const [id, mode, snapshot, destination] of [
+    ['digest-wait', 'digest', 'synthetic', f.service.destination],
+    ['unfinished', 'immediate', '', f.service.destination],
+    ['foreign', 'immediate', 'synthetic', 'weixin:other-destination'],
+  ]) {
+    const item = f.store.put(incoming(`youtube:stop-${id}`), [source], true, destination);
+    f.store.run('UPDATE deliveries SET mode=?,snapshot=? WHERE item_id=?', mode, snapshot, item.id);
+    rows.push({ before: f.store.get<Delivery>('SELECT * FROM deliveries WHERE item_id=?', item.id)!, cancel: false });
+  }
+  for (let n = 0; n < 3; n++) dailyReceipt(f, source, `stop-history-${n}`, 'failed');
+  const calls = f.calls.length;
+  f.service.recoverDeliveries(); assertDailyPaused(f.service);
+  for (const { before, cancel } of rows) {
+    const after = f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?', before.id)!;
+    if (cancel) { assert.equal(after.status, 'cancelled', `${before.mode}/${before.status}/${before.error}`); assert.equal(after.error, dailyFailureLimit); }
+    else assert.deepEqual(after, before);
+  }
+  assert.equal(f.calls.length, calls);
+});
+
+test('AC-DAY-05: historical three failures pause immediately on upgrade without another send; latch survives a later sent receipt', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  const source = f.source();
+  for (let n = 0; n < 3; n++) dailyReceipt(f, source, `upgrade-${n}`, 'failed');
+  legacyAccount(f, { retryAt: 0, error: '' });
+  assert.equal(f.store.get("SELECT count(*) n FROM meta WHERE key LIKE 'weixin-failure-pause:%'")!.n, 0);
+  const reopened = new Store(f.dir, 'demo', f.now); t.after(() => reopened.close());
+  const restarted = new Weixin(reopened, f.config, f.request);
+  const calls = f.calls.length;
+  assertDailyPaused(restarted);
+  assert.equal(f.store.get("SELECT count(*) n FROM meta WHERE key LIKE 'weixin-failure-pause:%'")!.n, 1);
+  restarted.recoverDeliveries();
+  assert.equal(f.store.get("SELECT count(*) n FROM deliveries WHERE status='cancelled' AND error=?", dailyFailureLimit)!.n, 3);
+  f.advance(1); dailyReceipt(f, source, 'late-success', 'sent');
+  await f.inbound(f.now(), 'upgrade-fresh');
+  const again = new Weixin(reopened, f.config, f.request);
+  again.recoverDeliveries(); assertDailyPaused(again);
+  const afterInbound = f.calls.length;
+  assert.equal((await again.send('synthetic', 'upgrade-blocked')).code, dailyFailureLimit);
+  assert.equal(f.calls.length, afterInbound);
+  assert.equal(afterInbound, calls + 1);
+});
+
+test('AC-DAY-06: Beijing midnight releases new tasks only, never stopped old tasks, regardless of configured timezone', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  f.store.setSettings({ ...f.store.settings(), timezone: 'America/New_York' });
+  f.advance(Date.parse('2026-10-16T15:59:59Z') - f.now());
+  const source = f.source();
+  const old = Array.from({ length: 3 }, (_, n) => dailyReceipt(f, source, `midnight-stop-${n}`, 'failed'));
+  f.service.recoverDeliveries(); assertDailyPaused(f.service);
+  f.advance(1000);
+  const reopened = new Store(f.dir, 'demo', f.now); t.after(() => reopened.close());
+  const restarted = new Weixin(reopened, f.config, f.request);
+  restarted.recoverDeliveries();
+  assert.equal(restarted.describe().ready, true); assert.equal(restarted.describe().nextRetryAt, 0);
+  assert.equal(reopened.claimDelivery(restarted.destination, 25), undefined);
+  const fresh = reopened.put(incoming('youtube:daily-new-day', 0), [source], true, restarted.destination);
+  const d = reopened.claimDelivery(restarted.destination, 25); assert.ok(d); assert.equal(d.item_id, fresh.id);
+  f.send({ ret: 0 }); reopened.finishDelivery(d, await restarted.send(d.snapshot, d.id));
+  restarted.recoverDeliveries();
+  assert.equal(reopened.get<Delivery>('SELECT * FROM deliveries WHERE id=?', d.id)!.status, 'sent');
+  for (const previous of old) {
+    const row = reopened.get<Delivery>('SELECT * FROM deliveries WHERE id=?', previous.id)!;
+    assert.equal(row.status, 'cancelled'); assert.equal(row.error, dailyFailureLimit);
+  }
+  assert.equal(reopened.claimDelivery(restarted.destination, 25), undefined);
+  assert.equal(f.calls.filter(c => c.url.pathname.endsWith('sendmessage')).length, 1);
+});
+
+test('AC-DAY-07: midnight restart fences an unlatched previous-day three-failure streak', async t => {
+  const f = setup(t); await f.bind(); await f.inbound();
+  f.advance(Date.parse('2026-10-16T15:59:59Z') - f.now());
+  const source = f.source();
+  const old = Array.from({length:3},(_,n) => dailyReceipt(f,source,`unlatched-${n}`,'failed'));
+  assert.equal(f.store.get("SELECT 1 FROM meta WHERE key LIKE 'weixin-failure-pause:%'"),undefined);
+  f.advance(1000);
+  const restarted = new Weixin(f.store,f.config,f.request);
+  restarted.recoverDeliveries();
+  assert.equal(restarted.describe().ready,true);
+  for(const d of old) assert.equal(f.store.get<Delivery>('SELECT * FROM deliveries WHERE id=?',d.id)!.error,dailyFailureLimit);
+  const before = f.calls.length;
+  assert.equal((await restarted.send('synthetic',old[0].id)).code,dailyFailureLimit);
+  assert.equal(f.calls.length,before);
 });
 
 test('AC1: new inbound before rejection finishes is not lost; worker sends exactly once after recovery', async t => {

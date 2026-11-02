@@ -10,6 +10,7 @@ export function diagnostics(engine: Engine) {
   const summary = engine.summaries.describe();
   const weixin = config.pushChannel === 'weixin' && !config.demo ? engine.weixin.describe() : undefined;
   const reasons: Record<string, string> = {
+    WEIXIN_DAILY_FAILURE_LIMIT: '微信当天已连续失败3次，今天暂停推送；次日仅发送新任务，不补发已停止的旧任务',
     WEIXIN_CONTEXT_REJECTED: '微信拒绝发送，可能上下文或发送限制',
     WEIXIN_SESSION_EXPIRED: '微信登录失效，请重新扫码绑定',
     WEIXIN_NEEDS_MESSAGE: '缺少发送上下文，请向机器人发一条新消息',

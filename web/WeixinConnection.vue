@@ -32,7 +32,8 @@ let active = true,
   timer: ReturnType<typeof setTimeout> | undefined;
 const messages: Record<string, string> = {
   WEIXIN_NEEDS_MESSAGE: '已绑定，请向 ClawBot 发一条新消息；有效上下文更新后，仍有效且未达重试上限的任务自动恢复。',
-  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送，可能上下文或发送限制。按北京时间每小时整点重试，包含最终投递任务创建当日24:00的最后一轮，00:01过期；新消息不会提前重试，仍受授权及每日额度限制。不确定结果需人工核查。',
+  WEIXIN_CONTEXT_REJECTED: '微信拒绝发送。未达当天连续3次失败上限时每小时整点重试，达到上限当天停止；结果未知需人工核查。',
+  WEIXIN_DAILY_FAILURE_LIMIT: '微信当天已连续失败3次，今天停止自动推送；次日仅发送新任务，不补发已停止的旧任务。',
   WEIXIN_SESSION_EXPIRED: '微信登录已失效，需要重新扫码绑定。',
   WEIXIN_NETWORK_ERROR: '暂时无法连接微信服务。',
   WEIXIN_POLL_FAILED: '微信连接异常，正在等待恢复。',
